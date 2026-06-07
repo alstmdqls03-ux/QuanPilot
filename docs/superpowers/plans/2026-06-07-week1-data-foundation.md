@@ -1184,7 +1184,9 @@ def test_collect_funding_backfills(session):
     rows = [{"ts": base + i * eight_h, "funding_rate": 0.0001} for i in range(3)]
     now = base + 100 * eight_h
     client = FakeClientForCollect(rows, kind="funding")
-    summary = collect_funding(session, client, "BTC-USDT-SWAP", days=30, now_ms=now, page_limit=2)
+    # days=90: since = now - 90d 가 모든 테스트 행보다 이전이어야 3개 다 백필됨.
+    # (days=30이면 since가 행들보다 미래라 0개 fetch — 그래서 90)
+    summary = collect_funding(session, client, "BTC-USDT-SWAP", days=90, now_ms=now, page_limit=2)
     from quantpilot.data.models import FundingRate
     assert session.query(FundingRate).count() == 3
     assert summary["inserted"] == 3
