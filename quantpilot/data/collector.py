@@ -5,6 +5,15 @@ OKXClient에 위임한다. DB 쓰기는 unique 제약 기반 upsert로 중복을
 """
 from __future__ import annotations
 
+from sqlalchemy import func, select
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+
+from quantpilot.data.models import Candle, FundingRate, Instrument
+from quantpilot.exchange.instruments import parse_instrument
+from quantpilot.timeframes import timeframe_to_ms
+
+DAY_MS = 86_400_000
+
 
 def drop_unclosed(rows: list[dict], timeframe_ms: int, now_ms: int) -> list[dict]:
     """아직 닫히지 않은(형성 중) 캔들을 제거.
@@ -14,12 +23,6 @@ def drop_unclosed(rows: list[dict], timeframe_ms: int, now_ms: int) -> list[dict
     봉이 완전히 닫힌 것(ts + 봉길이 <= 현재)만 남긴다.
     """
     return [r for r in rows if r["ts"] + timeframe_ms <= now_ms]
-
-
-from sqlalchemy import func, select
-from sqlalchemy.dialects.sqlite import insert as sqlite_insert
-
-from quantpilot.data.models import Candle, FundingRate
 
 
 def last_candle_ts(session, exchange: str, symbol: str, timeframe: str) -> int | None:
@@ -105,13 +108,6 @@ def upsert_funding(session, exchange: str, symbol: str,
     session.execute(stmt)
     session.commit()
     return _count() - before
-
-
-from quantpilot.data.models import Instrument
-from quantpilot.exchange.instruments import parse_instrument
-from quantpilot.timeframes import timeframe_to_ms
-
-DAY_MS = 86_400_000
 
 
 def collect_ohlcv(session, client, symbol: str, timeframe: str, days: int,
