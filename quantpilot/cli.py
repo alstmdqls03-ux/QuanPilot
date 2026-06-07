@@ -5,6 +5,7 @@ WHY click: 옵션 파싱·--help·검증을 데코레이터로 공짜 제공.
 from __future__ import annotations
 
 import time
+from pathlib import Path
 
 import click
 
@@ -20,6 +21,8 @@ from sqlalchemy import func, select
 
 def _session():
     settings = Settings()
+    # data/ 는 gitignore라 신규 클론엔 없음 — 첫 실행 시 생성
+    Path(settings.db_path).parent.mkdir(parents=True, exist_ok=True)
     engine = make_engine(settings.db_url)
     init_db(engine)
     return make_session_factory(engine)(), settings

@@ -13,6 +13,14 @@ def test_status_empty_db(tmp_path, monkeypatch):
     assert "BTC-USDT-SWAP" in result.output or "비어" in result.output
 
 
+def test_status_creates_missing_parent_dir(tmp_path, monkeypatch):
+    # 부모 디렉토리가 없는 경로라도 status가 크래시 없이 동작해야 함.
+    db = tmp_path / "nonexistent" / "sub" / "x.db"
+    monkeypatch.setenv("QUANTPILOT_DB_PATH", str(db))
+    result = CliRunner().invoke(cli, ["status"])
+    assert result.exit_code == 0
+
+
 def test_collect_rejects_bad_timeframe(tmp_path, monkeypatch):
     db = tmp_path / "t.db"
     monkeypatch.setenv("QUANTPILOT_DB_PATH", str(db))
