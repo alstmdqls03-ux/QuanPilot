@@ -20,3 +20,40 @@ def test_drop_unclosed_keeps_all_when_old():
     now = 1_800_000_000_000  # 충분히 미래 → 전부 닫힘
     rows = [{"ts": 1_700_000_000_000, "open": 1, "high": 1, "low": 1, "close": 1, "volume": 1}]
     assert len(drop_unclosed(rows, tf_ms, now)) == 1
+
+
+from quantpilot.data.collector import (
+    last_candle_ts, upsert_candles, last_funding_ts, upsert_funding,
+)
+
+
+def _candle(ts, close=100.0):
+    return {"ts": ts, "open": 1, "high": 1, "low": 1, "close": close, "volume": 1}
+
+
+def test_last_candle_ts_none_when_empty(session):
+    assert last_candle_ts(session, "okx", "BTC-USDT-SWAP", "1h") is None
+
+
+def test_upsert_candles_inserts_and_is_idempotent(session):
+    rows = [_candle(1_700_000_000_000), _candle(1_700_003_600_000)]
+    new1 = upsert_candles(session, "okx", "BTC-USDT-SWAP", "1h", rows, now_ms=1)
+    assert new1 == 2
+    # 같은 데이터 재삽입 → 신규 0, 중복 없음
+    new2 = upsert_candles(session, "okx", "BTC-USDT-SWAP", "1h", rows, now_ms=1)
+    assert new2 == 0
+    from quantpilot.data.models import Candle
+    assert session.query(Candle).count() == 2
+
+
+def test_last_candle_ts_returns_max(session):
+    rows = [_candle(1_700_000_000_000), _candle(1_700_003_600_000)]
+    upsert_candles(session, "okx", "BTC-USDT-SWAP", "1h", rows, now_ms=1)
+    assert last_candle_ts(session, "okx", "BTC-USDT-SWAP", "1h") == 1_700_003_600_000
+
+
+def test_upsert_funding_idempotent(session):
+    rows = [{"ts": 1_700_000_000_000, "funding_rate": 0.0001}]
+    assert upsert_funding(session, "okx", "BTC-USDT-SWAP", rows, now_ms=1) == 1
+    assert upsert_funding(session, "okx", "BTC-USDT-SWAP", rows, now_ms=1) == 0
+    assert last_funding_ts(session, "okx", "BTC-USDT-SWAP") == 1_700_000_000_000
