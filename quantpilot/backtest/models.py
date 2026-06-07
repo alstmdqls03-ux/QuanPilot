@@ -14,7 +14,6 @@ class Position:
     targets_remaining: list[tuple[float, float]]  # [(price, fraction_of_original), ...]
     opened_ts: int
     original_contracts: int = 0             # 진입 시 총 계약(부분 익절 수량 계산용)
-    funding_paid: float = 0.0               # 보유 중 누적 funding(USDT)
 
     def __post_init__(self):
         if self.original_contracts == 0:

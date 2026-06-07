@@ -51,6 +51,10 @@ def detect_gaps(ts_list: list[int], timeframe_ms: int) -> tuple[int, list[tuple[
     return gaps, ranges
 
 
+class DataGapError(Exception):
+    """데이터 구멍 또는 부재로 백테스트를 막을 때."""
+
+
 def load_with_gap_check(session, symbol: str, timeframe: str, allow_gaps: bool):
     """DataFrame 로드 + gap 검사. 반환 (df, gaps, ranges).
     allow_gaps=False이고 gap>0이면 DataGapError.
@@ -66,7 +70,3 @@ def load_with_gap_check(session, symbol: str, timeframe: str, allow_gaps: bool):
             f"--allow-gaps로 무시하거나 데이터를 다시 수집하세요."
         )
     return df, gaps, ranges
-
-
-class DataGapError(Exception):
-    """데이터 구멍 또는 부재로 백테스트를 막을 때."""

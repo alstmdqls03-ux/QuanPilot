@@ -39,9 +39,10 @@ def compute_metrics(curve, trades, periods_per_year: float) -> dict:
     total_return = (eq[-1] / eq[0] - 1.0) if len(eq) >= 2 and eq[0] != 0 else 0.0
     wins = [t for t in trades if t.pnl_net > 0]
     losses = [t for t in trades if t.pnl_net < 0]
-    gross_profit = sum(t.pnl_net for t in wins)
-    gross_loss = abs(sum(t.pnl_net for t in losses))
-    pf = (gross_profit / gross_loss) if gross_loss > 0 else float("inf") if gross_profit > 0 else 0.0
+    # profit_factor는 net 기준(수수료·funding 차감 후 손익 합). 변수명도 net으로 일치.
+    net_profit = sum(t.pnl_net for t in wins)
+    net_loss = abs(sum(t.pnl_net for t in losses))
+    pf = (net_profit / net_loss) if net_loss > 0 else float("inf") if net_profit > 0 else 0.0
     return {
         "sharpe": round(sharpe(curve, periods_per_year), 3),
         "max_drawdown": round(max_drawdown(curve), 4),

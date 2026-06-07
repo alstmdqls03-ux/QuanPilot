@@ -18,8 +18,7 @@ class SizingResult:
 
 def calculate_position_size(
     capital: float, risk_pct: float, entry: float, stop: float,
-    ct_val: float, lot_sz: float, leverage: int = 3,
-    maint_margin_rate: float = 0.005, fee_bps: float = 5.0, side: str = "long",
+    ct_val: float, lot_sz: float, leverage: int = 3, fee_bps: float = 5.0,
 ) -> SizingResult:
     """위험 예산(capital×risk_pct) 안에서 계약 수를 계산.
 

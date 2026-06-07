@@ -30,7 +30,6 @@ def format_console(result: BacktestResult, symbol: str, strategy: str) -> str:
 def save_equity_png(result: BacktestResult, path: str) -> None:
     """train(파랑)+OOS(주황) equity curve, 분리선 포함 PNG 저장."""
     ts = [t for t, _ in result.equity_curve]
-    eq = [e for _, e in result.equity_curve]  # noqa: F841
     split = result.split_ts
     fig, ax = plt.subplots(figsize=(10, 5))
     train_x = [t for t in ts if t < split]

@@ -1,5 +1,4 @@
 import pandas as pd
-import pytest
 
 from quantpilot.strategy.indicators import rsi, atr, ema
 
