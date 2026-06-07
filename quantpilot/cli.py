@@ -16,7 +16,11 @@ from quantpilot.data.collector import (
 )
 from quantpilot.data.models import Candle, FundingRate, Instrument
 from quantpilot.timeframes import SUPPORTED_TIMEFRAMES, timeframe_to_ms
+from quantpilot.strategy.rsi_mean_reversion import RsiMeanReversion
 from sqlalchemy import func, select
+
+# 전략 레지스트리 — 새 전략 = 클래스 + 여기 1줄
+STRATEGIES = {"rsi-mr": RsiMeanReversion}
 
 
 def _session():
@@ -123,6 +127,72 @@ def status():
         click.echo(f"  funding: {fcnt}개")
     icnt = session.execute(select(func.count()).select_from(Instrument)).scalar_one()
     click.echo(f"Instrument 캐시: {icnt}개 심볼")
+
+
+@cli.command()
+@click.option("--strategy", default="rsi-mr", show_default=True)
+@click.option("--symbol", default="BTC-USDT-SWAP", show_default=True)
+@click.option("--timeframe", default="1h", show_default=True)
+@click.option("--oos-months", default=2, show_default=True, type=int)
+@click.option("--capital", default=1000.0, show_default=True, type=float)
+@click.option("--leverage", default=3, show_default=True, type=int)
+@click.option("--allow-gaps", is_flag=True, default=False)
+def backtest(strategy, symbol, timeframe, oos_months, capital, leverage, allow_gaps):
+    """과거 데이터에 전략을 돌려 train/OOS 성과 측정."""
+    if strategy not in STRATEGIES:
+        raise click.ClickException(
+            f"알 수 없는 전략 '{strategy}'. 사용 가능: {', '.join(STRATEGIES)}")
+    if timeframe not in SUPPORTED_TIMEFRAMES:
+        raise click.ClickException(
+            f"지원하지 않는 timeframe '{timeframe}'. 사용 가능: {', '.join(sorted(SUPPORTED_TIMEFRAMES))}")
+
+    from quantpilot.backtest.data_loader import DataGapError, load_with_gap_check
+    from quantpilot.backtest.engine import run_backtest
+    from quantpilot.backtest.metrics import compute_metrics, periods_per_year
+    from quantpilot.backtest.report import format_console, save_equity_png
+    from quantpilot.data.models import FundingRate, Instrument
+    from sqlalchemy import select
+
+    session, _ = _session()
+    try:
+        df, gaps, _ = load_with_gap_check(session, symbol, timeframe, allow_gaps)
+    except DataGapError as e:
+        raise click.ClickException(str(e))
+    if gaps:
+        click.echo(f"⚠️  {gaps}개 봉 누락 (--allow-gaps로 진행 중)")
+
+    # ct_val 조회 (없으면 안내)
+    inst = session.execute(select(Instrument).where(
+        Instrument.symbol == symbol)).scalar_one_or_none()
+    if inst is None:
+        raise click.ClickException(
+            f"{symbol} Instrument 캐시 없음. 먼저 'quantpilot collect'를 실행하세요.")
+
+    funding_events = [(f.ts, f.funding_rate) for f in session.execute(
+        select(FundingRate).where(FundingRate.symbol == symbol)
+        .order_by(FundingRate.ts)).scalars().all()]
+
+    # train/OOS 분리: 마지막 oos_months 개월을 OOS
+    split_ts = int(df.index[-1]) - oos_months * 30 * 86_400_000
+
+    strat = STRATEGIES[strategy](timeframe=timeframe)
+    result = run_backtest(
+        candles=df, strategy=strat, capital=capital, ct_val=inst.ct_val,
+        lot_sz=inst.lot_sz, leverage=leverage, fee_bps=5, slippage_bps=2,
+        funding_events=funding_events, oos_split_ts=split_ts)
+
+    ppy = periods_per_year(timeframe)
+    train_curve = [(t, e) for t, e in result.equity_curve if t < split_ts]
+    oos_curve = [(t, e) for t, e in result.equity_curve if t >= split_ts]
+    train_trades = [t for t in result.trades if t.closed_ts < split_ts]
+    oos_trades = [t for t in result.trades if t.closed_ts >= split_ts]
+    result.train_metrics = compute_metrics(train_curve, train_trades, ppy)
+    result.oos_metrics = compute_metrics(oos_curve, oos_trades, ppy)
+
+    click.echo(format_console(result, symbol, strategy))
+    png = f"backtest_{symbol}_{strategy}_{_now_ms()}.png"
+    save_equity_png(result, png)
+    click.echo(f"equity curve 저장됨: {png}")
 
 
 if __name__ == "__main__":
