@@ -16,6 +16,10 @@ venv/
 *.db
 !quantpilot/data/
 
+# 백테스트 산출물 (equity curve PNG 등 런타임 결과)
+# WHY: backtest 명령이 루트에 생성하는 차트는 재생성 가능한 산출물이라 추적 안 함.
+backtest_*.png
+
 # OS / 에디터
 .DS_Store
 .idea/
