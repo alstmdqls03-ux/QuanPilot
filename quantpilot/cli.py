@@ -52,9 +52,13 @@ def collect(symbol: str, timeframe: str, days: int):
     session, _ = _session()
     from quantpilot.exchange.client import OKXClient
     client = OKXClient()
-    client.load_markets()
-    upsert_instruments(session, client, now_ms=_now_ms())
-    summary = collect_ohlcv(session, client, symbol, timeframe, days=days, now_ms=_now_ms())
+    try:
+        client.load_markets()
+        upsert_instruments(session, client, now_ms=_now_ms())
+        summary = collect_ohlcv(session, client, symbol, timeframe, days=days, now_ms=_now_ms())
+    except ValueError as e:
+        # 잘못된 심볼 등(resolve_symbol) → raw traceback 대신 친절한 CLI 에러로.
+        raise click.ClickException(str(e))
     click.echo(f"{symbol} {timeframe}: 신규 {summary['inserted']}개 적재")
     if summary.get("truncated"):
         click.echo(
@@ -71,8 +75,11 @@ def collect_funding_cmd(symbol: str, days: int):
     session, _ = _session()
     from quantpilot.exchange.client import OKXClient
     client = OKXClient()
-    client.load_markets()
-    summary = collect_funding(session, client, symbol, days=days, now_ms=_now_ms())
+    try:
+        client.load_markets()
+        summary = collect_funding(session, client, symbol, days=days, now_ms=_now_ms())
+    except ValueError as e:
+        raise click.ClickException(str(e))
     click.echo(f"{symbol} funding: 신규 {summary['inserted']}개 적재")
     if summary.get("truncated"):
         click.echo(
