@@ -28,8 +28,12 @@ class Candle(Base):
     high = Column(Float, nullable=False)
     low = Column(Float, nullable=False)
     close = Column(Float, nullable=False)
-    volume = Column(Float, nullable=False)        # ccxt OHLCV[5], 계약 수량 기준
-    # WHY 단일 volume: 통화환산 volume은 Week 1에서 안 씀(YAGNI).
+    volume = Column(Float, nullable=False)        # ccxt OHLCV[5] (정규화된 거래량)
+    # WHY 단위 주의: ccxt가 정규화한 값이라 OKX 선물에선 '계약 수' 가 아니라
+    #   base-asset(예: BTC) 거래량일 수 있음. 단위는 ccxt 버전/심볼마다 다를 수
+    #   있으니, Week 2 sizing/PnL에 쓰기 전 ct_val로 환산·검증할 것
+    #   (1 BTC = 1/ct_val 계약). 계약 수로 단정하지 말 것.
+    # WHY 단일 컬럼: 통화환산 volume(volCcy)은 Week 1에서 안 씀(YAGNI).
     inserted_at = Column(BigInteger, nullable=False)  # 적재 시각 ms epoch
     # WHY inserted_at: "이 캔들 언제 받았지?" 디버깅이 의외로 잦음.
 

@@ -10,11 +10,11 @@ class Settings(BaseSettings):
 
     @property
     def db_url(self) -> str:
-        """SQLAlchemy용 URL.
+        """SQLAlchemy용 SQLite URL.
 
-        WHY 절대경로 처리: SQLite는 절대경로 앞에 슬래시가 하나 더 붙음.
-        '/tmp/x.db' → 'sqlite:////tmp/x.db', 'data/x.db' → 'sqlite:///data/x.db'.
+        WHY 분기 불필요: 'sqlite:///' + 경로 concat이 두 경우를 다 맞춘다.
+        절대경로는 앞의 '/'가 더해져 슬래시 4개가 됨
+        ('/tmp/x.db' → 'sqlite:////tmp/x.db'), 상대경로는 3개
+        ('data/x.db' → 'sqlite:///data/x.db'). 별도 if 분기가 필요 없다.
         """
-        if self.db_path.startswith("/"):
-            return f"sqlite:///{self.db_path}"
         return f"sqlite:///{self.db_path}"

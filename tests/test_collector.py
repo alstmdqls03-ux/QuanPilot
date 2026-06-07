@@ -139,3 +139,40 @@ def test_upsert_instruments_writes_row(session):
     from quantpilot.data.models import Instrument
     assert session.query(Instrument).filter_by(symbol="BTC-USDT-SWAP").one().ct_val == 0.01
     assert n == 1
+
+
+def test_collect_funding_no_skip_on_variable_cadence(session):
+    # 회귀(#1): funding 주기가 8h이 아니라 4h 간격이어도 빠짐 없이 수집돼야 함.
+    # page_limit=1로 강제하면, 옛 코드(cursor += 8h)는 base+4h 이벤트를 건너뛴다.
+    base = 1_700_000_000_000
+    four_h = 4 * 3_600_000
+    rows = [{"ts": base + i * four_h, "funding_rate": 0.0001} for i in range(3)]
+    now = base + 1000 * four_h
+    client = FakeClientForCollect(rows, kind="funding")
+    summary = collect_funding(session, client, "BTC-USDT-SWAP", days=365, now_ms=now, page_limit=1)
+    from quantpilot.data.models import FundingRate
+    assert session.query(FundingRate).count() == 3  # 4h 간격 미스 없이 셋 다
+    assert summary["inserted"] == 3
+
+
+def test_collect_ohlcv_flags_truncation(session):
+    # #6: 데이터가 페이지 경계에서 끝나고 now보다 한참 이전이면 truncated=True.
+    tf_ms = 3_600_000
+    base = 1_700_000_000_000
+    rows = [_candle(base + i * tf_ms) for i in range(4)]  # page_limit 배수에 맞춤
+    now = base + 50 * tf_ms  # 데이터 끝(base+3tf)이 now보다 한참 전
+    client = FakeClientForCollect(rows)
+    s = collect_ohlcv(session, client, "BTC-USDT-SWAP", "1h", days=365, now_ms=now, page_limit=2)
+    assert s["inserted"] == 4
+    assert s["truncated"] is True
+
+
+def test_collect_ohlcv_no_truncation_when_current(session):
+    # #6: 데이터가 now 직전까지 있으면 truncated=False(정상 종료).
+    tf_ms = 3_600_000
+    base = 1_700_000_000_000
+    rows = [_candle(base + i * tf_ms) for i in range(4)]
+    now = base + 4 * tf_ms + 100  # 마지막 봉 직후 = 현재
+    client = FakeClientForCollect(rows)
+    s = collect_ohlcv(session, client, "BTC-USDT-SWAP", "1h", days=365, now_ms=now, page_limit=2)
+    assert s["truncated"] is False

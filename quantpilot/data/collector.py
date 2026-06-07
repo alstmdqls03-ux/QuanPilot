@@ -124,43 +124,57 @@ def collect_ohlcv(session, client, symbol: str, timeframe: str, days: int,
     since = (last + tf_ms) if last is not None else (now_ms - days * DAY_MS)
 
     total_inserted = 0
+    truncated = False
     cursor = since
     while cursor < now_ms:
         batch = client.fetch_ohlcv(symbol, timeframe, since_ms=cursor, limit=page_limit)
         if not batch:
+            # 현재보다 한참 이전에서 빈 응답 → 거래소 히스토리 한계일 가능성.
+            # WHY: --days로 요청한 범위를 OKX가 다 못 줄 때(1h≈수개월, 15m≈수주)
+            #      조용히 잘리는 걸 호출부가 경고하도록 신호를 남긴다.
+            if cursor < now_ms - 2 * tf_ms:
+                truncated = True
             break
         # 이미 가진 마지막 ts 이하인 행이 섞여 와도 upsert가 걸러줌.
         closed = drop_unclosed(batch, tf_ms, now_ms)
         total_inserted += upsert_candles(session, exchange, symbol, timeframe, closed, now_ms)
-        # 다음 커서: 받은 마지막 봉의 다음 봉.
-        cursor = batch[-1]["ts"] + tf_ms
-        # WHY batch[-1] 기준: drop_unclosed로 closed가 비어도 커서는 전진해야
-        # 무한 루프를 피함(미완성 봉만 남은 마지막 페이지).
+        # 다음 커서: 받은 봉 중 최대 ts의 다음 봉.
+        # WHY max(): ccxt가 정렬 안 된/뒤섞인 페이지를 줘도 커서가 역행하지
+        # 않도록(데이터 누락 방지). closed가 비어도 batch 기준이라 전진 보장.
+        cursor = max(r["ts"] for r in batch) + tf_ms
         if len(batch) < page_limit:
             break
 
-    return {"symbol": symbol, "timeframe": timeframe, "inserted": total_inserted}
+    return {"symbol": symbol, "timeframe": timeframe,
+            "inserted": total_inserted, "truncated": truncated}
 
 
 def collect_funding(session, client, symbol: str, days: int, now_ms: int,
                     exchange: str = "okx", page_limit: int = 100) -> dict:
-    """funding rate 증분 수집 (8시간 주기). OHLCV와 동일한 증분 패턴."""
-    eight_h = 8 * 3_600_000
+    """funding rate 증분 수집. OHLCV와 동일한 증분 패턴."""
+    eight_h = 8 * 3_600_000  # 트렁케이션 판정용 기준 주기(funding은 보통 8h)
     last = last_funding_ts(session, exchange, symbol)
-    since = (last + eight_h) if last is not None else (now_ms - days * DAY_MS)
+    # WHY +1ms: funding 주기는 8h 고정이 아님(고변동 구간엔 4h/6h로 바뀜).
+    # 마지막 이후 1ms부터 다시 받으면 주기와 무관하게 빠짐 없이 수집되고,
+    # 재페치되는 중복은 upsert(on_conflict_do_nothing)가 무시한다.
+    since = (last + 1) if last is not None else (now_ms - days * DAY_MS)
 
     total_inserted = 0
+    truncated = False
     cursor = since
     while cursor < now_ms:
         batch = client.fetch_funding(symbol, since_ms=cursor, limit=page_limit)
         if not batch:
+            if cursor < now_ms - 2 * eight_h:
+                truncated = True
             break
         total_inserted += upsert_funding(session, exchange, symbol, batch, now_ms)
-        cursor = batch[-1]["ts"] + eight_h
+        # WHY max()+1: 정렬 안 된 페이지 방어 + 주기 무관 진행(중복은 upsert가 무시).
+        cursor = max(r["ts"] for r in batch) + 1
         if len(batch) < page_limit:
             break
 
-    return {"symbol": symbol, "inserted": total_inserted}
+    return {"symbol": symbol, "inserted": total_inserted, "truncated": truncated}
 
 
 def upsert_instruments(session, client, now_ms: int, exchange: str = "okx") -> int:

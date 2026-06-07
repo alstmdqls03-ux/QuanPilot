@@ -56,6 +56,11 @@ def collect(symbol: str, timeframe: str, days: int):
     upsert_instruments(session, client, now_ms=_now_ms())
     summary = collect_ohlcv(session, client, symbol, timeframe, days=days, now_ms=_now_ms())
     click.echo(f"{symbol} {timeframe}: 신규 {summary['inserted']}개 적재")
+    if summary.get("truncated"):
+        click.echo(
+            f"⚠️  OKX가 요청한 {days}일치 전부를 주지 않음(히스토리 한계 가능성). "
+            f"'quantpilot status'로 실제 적재 범위를 확인하세요."
+        )
 
 
 @cli.command(name="collect-funding")
@@ -69,6 +74,11 @@ def collect_funding_cmd(symbol: str, days: int):
     client.load_markets()
     summary = collect_funding(session, client, symbol, days=days, now_ms=_now_ms())
     click.echo(f"{symbol} funding: 신규 {summary['inserted']}개 적재")
+    if summary.get("truncated"):
+        click.echo(
+            f"⚠️  OKX가 요청한 {days}일치 funding 전부를 주지 않음(히스토리 한계 가능성). "
+            f"'quantpilot status'로 실제 적재 범위를 확인하세요."
+        )
 
 
 @cli.command()
