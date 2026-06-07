@@ -167,3 +167,18 @@ def test_run_backtest_short_position():
     )
     assert r.equity_curve
     assert all(t.side == "short" for t in r.trades)
+
+
+def test_stop_loss_with_slippage_stays_within_risk_budget():
+    # 안전 e2e: 슬리피지 큰 손절도 실현 손실이 5% 예산을 (반올림 여유 내) 넘지 않아야.
+    # 슬리피지를 사이징에서 빼면 이 한도를 초과한다(Codex #1 회귀).
+    df = _ohlc([(100, 100, 100, 100), (100, 100, 100, 100),
+                (100, 100, 100, 100), (100, 100, 89, 90)])  # bar3 손절
+    r = run_backtest(
+        candles=df, strategy=_AlwaysLongOnceStrategy(), capital=1000.0,
+        ct_val=0.01, lot_sz=1.0, leverage=3, fee_bps=5, slippage_bps=20,
+        funding_events=[], oos_split_ts=df.index[3],
+    )
+    assert r.trades, "손절로 1건 청산되어야 함"
+    realized_loss = 1000.0 - r.equity_curve[-1][1]
+    assert realized_loss <= 1000.0 * 0.05 * 1.02  # 5% 예산 + 정수계약 여유

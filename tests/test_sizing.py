@@ -39,3 +39,19 @@ def test_insufficient_capital_raises():
             capital=1.0, risk_pct=0.05, entry=50000.0, stop=49000.0,
             ct_val=1.0, lot_sz=1.0, leverage=3,
         )
+
+
+def test_sizing_includes_exit_slippage_in_budget():
+    # 손절 슬리피지를 포함해도 max_loss(슬리피지 반영) ≤ 위험예산이어야 함.
+    # 슬리피지를 빼면 더 큰 포지션이 나와 실현 손실이 5%를 초과한다.
+    no_slip = calculate_position_size(
+        capital=1000.0, risk_pct=0.05, entry=100.0, stop=95.0,
+        ct_val=0.01, lot_sz=1.0, leverage=3, fee_bps=5.0, slippage_bps=0.0,
+    )
+    with_slip = calculate_position_size(
+        capital=1000.0, risk_pct=0.05, entry=100.0, stop=95.0,
+        ct_val=0.01, lot_sz=1.0, leverage=3, fee_bps=5.0, slippage_bps=50.0,
+    )
+    # 슬리피지 반영 시 1계약 손실이 커져 계약 수는 더 작아져야 함
+    assert with_slip.contracts < no_slip.contracts
+    assert with_slip.max_loss_usd <= 1000.0 * 0.05 + 1e-6

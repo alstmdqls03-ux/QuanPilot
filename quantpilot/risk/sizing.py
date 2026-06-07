@@ -19,21 +19,25 @@ class SizingResult:
 def calculate_position_size(
     capital: float, risk_pct: float, entry: float, stop: float,
     ct_val: float, lot_sz: float, leverage: int = 3, fee_bps: float = 5.0,
+    slippage_bps: float = 0.0,
 ) -> SizingResult:
     """위험 예산(capital×risk_pct) 안에서 계약 수를 계산.
 
-    Invariant(강제 assert): max_loss + fee ≤ capital × risk_pct × 1.02.
-    1계약 손실 = price_distance × ct_val. 레버리지 상한으로 notional 클램프.
+    Invariant(강제 assert): max_loss + fee ≤ capital × risk_pct (+1e-6).
+    1계약 손실 = (손절 거리 + 손절 슬리피지) × ct_val. 레버리지 상한으로 notional 클램프.
     """
     risk_amount = capital * risk_pct
     price_distance = abs(entry - stop)
     if price_distance <= 0:
         raise InsufficientCapitalError("entry와 stop이 같음(거리 0)")
 
+    # WHY 손절 슬리피지를 손실 거리에 포함: 엔진이 손절을 stop보다 슬리피지만큼
+    #   불리하게 체결한다(engine.apply_slippage). 빼면 실현 손실이 stop 손실보다 커져
+    #   5% 불변식이 (특히 타이트한 stop에서) 깨진다. (cross-model 확인: Codex #1)
+    slip_dist = stop * (slippage_bps / 10000.0)
     # WHY 수수료를 위험예산에 포함: 1계약 비용 = 손절손실 + 왕복수수료.
     #   risk_amount를 (손실+수수료)로 나눠야 'max_loss + fee ≤ 위험예산'이 보장됨.
-    #   (수수료를 빼먹으면 실제 위험이 5%를 초과한다.)
-    per_contract_loss = price_distance * ct_val
+    per_contract_loss = (price_distance + slip_dist) * ct_val
     per_contract_fee = entry * ct_val * (fee_bps / 10000.0) * 2  # 진입+청산
     per_contract_cost = per_contract_loss + per_contract_fee
     raw = risk_amount / per_contract_cost

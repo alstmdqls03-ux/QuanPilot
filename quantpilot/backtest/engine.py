@@ -85,8 +85,10 @@ def _open_position(side, bar, stop, capital, ct_val, lot_sz, leverage,
     entry = apply_slippage(raw_entry, slippage_bps, buy_side)
     try:
         assert_stop_within_liquidation(entry, stop, leverage, side)
+        # slippage_bps 전달: 사이징이 손절 슬리피지를 5% 예산에 반영해야 불변식 유지.
         sizing = calculate_position_size(capital, 0.05, entry, stop, ct_val, lot_sz,
-                                         leverage=leverage, fee_bps=fee_bps)
+                                         leverage=leverage, fee_bps=fee_bps,
+                                         slippage_bps=slippage_bps)
     except (StopBeyondLiquidationError, InsufficientCapitalError):
         return None, 0.0
     targets = build_targets(entry, stop, side)
@@ -142,7 +144,9 @@ def run_backtest(candles, strategy, capital, ct_val, lot_sz, leverage,
             else:
                 position = position2
 
-        # 2) 전략 신호
+        # 2) 전략 신호 (market-on-close 모델)
+        #    WHY 같은 봉 진입 OK: 신호는 '닫힌 봉 i'의 OHLC로 계산되고, 진입은 그 봉의
+        #    종가에 체결된다. 봉이 닫힌 뒤 종가로 행동 → look-ahead 아님(미래 데이터 미사용).
         signal = strategy.generate_signal(window, position)
 
         # 3) 신호 처리
