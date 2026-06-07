@@ -11,8 +11,10 @@ venv/
 .env
 
 # 로컬 데이터 (SQLite DB, 수집한 시장 데이터)
-data/
+# WHY: 루트의 data/ 디렉토리만 무시하되, 소스 패키지 quantpilot/data/ 는 제외.
+/data/
 *.db
+!quantpilot/data/
 
 # OS / 에디터
 .DS_Store

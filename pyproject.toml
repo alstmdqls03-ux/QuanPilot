@@ -1,0 +1,35 @@
+[project]
+name = "quantpilot"
+version = "0.1.0"
+description = "OKX edge lab — Week 1 data foundation"
+requires-python = ">=3.11"
+dependencies = [
+    "ccxt>=4.2",
+    "SQLAlchemy>=2.0",
+    "pydantic-settings>=2.0",
+    "click>=8.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.4",
+]
+
+[project.scripts]
+quantpilot = "quantpilot.cli:cli"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.pytest.ini_options]
+markers = [
+    "live: 실제 OKX API를 호출하는 테스트 (수동 실행: pytest -m live)",
+]
+# WHY: 기본 실행(pytest)에서 live 테스트를 자동 제외해 빠르고 결정적으로 유지.
+addopts = "-m 'not live'"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
