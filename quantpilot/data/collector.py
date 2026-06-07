@@ -105,3 +105,94 @@ def upsert_funding(session, exchange: str, symbol: str,
     session.execute(stmt)
     session.commit()
     return _count() - before
+
+
+from quantpilot.data.models import Instrument
+from quantpilot.exchange.instruments import parse_instrument
+from quantpilot.timeframes import timeframe_to_ms
+
+DAY_MS = 86_400_000
+
+
+def collect_ohlcv(session, client, symbol: str, timeframe: str, days: int,
+                  now_ms: int, exchange: str = "okx", page_limit: int = 100) -> dict:
+    """OHLCV 증분 수집.
+
+    흐름: 시작점 결정 → 페이지네이션 → 미완성 봉 제거 → upsert → 요약.
+    WHY now_ms 주입: 테스트에서 시간을 고정해 결정적으로 만들기 위함.
+    """
+    tf_ms = timeframe_to_ms(timeframe)
+
+    last = last_candle_ts(session, exchange, symbol, timeframe)
+    # WHY: 있으면 다음 봉부터(증분), 없으면 days일 전부터(최초 백필).
+    since = (last + tf_ms) if last is not None else (now_ms - days * DAY_MS)
+
+    total_inserted = 0
+    cursor = since
+    while cursor < now_ms:
+        batch = client.fetch_ohlcv(symbol, timeframe, since_ms=cursor, limit=page_limit)
+        if not batch:
+            break
+        # 이미 가진 마지막 ts 이하인 행이 섞여 와도 upsert가 걸러줌.
+        closed = drop_unclosed(batch, tf_ms, now_ms)
+        total_inserted += upsert_candles(session, exchange, symbol, timeframe, closed, now_ms)
+        # 다음 커서: 받은 마지막 봉의 다음 봉.
+        cursor = batch[-1]["ts"] + tf_ms
+        # WHY batch[-1] 기준: drop_unclosed로 closed가 비어도 커서는 전진해야
+        # 무한 루프를 피함(미완성 봉만 남은 마지막 페이지).
+        if len(batch) < page_limit:
+            break
+
+    return {"symbol": symbol, "timeframe": timeframe, "inserted": total_inserted}
+
+
+def collect_funding(session, client, symbol: str, days: int, now_ms: int,
+                    exchange: str = "okx", page_limit: int = 100) -> dict:
+    """funding rate 증분 수집 (8시간 주기). OHLCV와 동일한 증분 패턴."""
+    eight_h = 8 * 3_600_000
+    last = last_funding_ts(session, exchange, symbol)
+    since = (last + eight_h) if last is not None else (now_ms - days * DAY_MS)
+
+    total_inserted = 0
+    cursor = since
+    while cursor < now_ms:
+        batch = client.fetch_funding(symbol, since_ms=cursor, limit=page_limit)
+        if not batch:
+            break
+        total_inserted += upsert_funding(session, exchange, symbol, batch, now_ms)
+        cursor = batch[-1]["ts"] + eight_h
+        if len(batch) < page_limit:
+            break
+
+    return {"symbol": symbol, "inserted": total_inserted}
+
+
+def upsert_instruments(session, client, now_ms: int, exchange: str = "okx") -> int:
+    """거래소 마켓 전체를 받아 Instrument 캐시 upsert. 처리한 행 수 반환.
+
+    WHY: Week 2 sizing이 ct_val을 읽으므로 수집 단계에서 미리 캐시.
+    파싱 실패하는 마켓(필드 누락)은 건너뜀.
+    """
+    markets = client.load_markets()
+    count = 0
+    for market in markets.values():
+        try:
+            inst = parse_instrument(market, exchange=exchange)
+        except (KeyError, TypeError, ValueError):
+            continue  # ctVal 등이 없는 마켓(현물 등)은 스킵
+        stmt = sqlite_insert(Instrument).values(
+            **inst, updated_at=now_ms
+        ).on_conflict_do_update(
+            index_elements=["exchange", "symbol"],
+            set_={
+                "ct_val": inst["ct_val"], "ct_val_ccy": inst["ct_val_ccy"],
+                "lot_sz": inst["lot_sz"], "min_sz": inst["min_sz"],
+                "tick_sz": inst["tick_sz"], "updated_at": now_ms,
+            },
+        )
+        # WHY on_conflict_do_update: 명세는 바뀔 수 있으니(틱사이즈 등)
+        # 캔들과 달리 최신값으로 갱신.
+        session.execute(stmt)
+        count += 1
+    session.commit()
+    return count
