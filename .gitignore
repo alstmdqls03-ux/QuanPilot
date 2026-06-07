@@ -27,3 +27,9 @@ backtest_*.png
 
 # git worktree 작업 폴더 (격리 작업공간 — 레포에 딸려가면 안 됨)
 .worktrees/
+
+# Claude Code / GSD 로컬 툴링 (네이티브 worktree·세션·플래닝 산출물)
+# WHY: .claude/worktrees는 격리 체크아웃(venv·DB 포함), .planning은 로컬 플래닝 상태.
+#   둘 다 레포에 안 올린다. CLAUDE.md(루트)는 추적 대상이라 영향 없음.
+.claude/
+.planning/
