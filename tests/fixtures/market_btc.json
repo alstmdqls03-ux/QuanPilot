@@ -1,0 +1,16 @@
+{
+  "id": "BTC-USDT-SWAP",
+  "symbol": "BTC/USDT:USDT",
+  "base": "BTC",
+  "quote": "USDT",
+  "contractSize": 0.01,
+  "precision": { "price": 0.1, "amount": 1 },
+  "limits": { "amount": { "min": 1 } },
+  "info": {
+    "ctVal": "0.01",
+    "ctValCcy": "BTC",
+    "lotSz": "1",
+    "minSz": "1",
+    "tickSz": "0.1"
+  }
+}
