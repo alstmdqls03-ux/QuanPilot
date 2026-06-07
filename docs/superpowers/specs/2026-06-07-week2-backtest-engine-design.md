@@ -73,7 +73,9 @@ quantpilot/
 tests/                     # 각 모듈별 + 합성 데이터 기반 engine/metrics/gap 테스트
 ```
 
-**책임 분리 이유**: 전략은 신호만(stateless), risk는 순수 함수, engine은 상태·체결·비용. 새 전략 추가해도 risk·engine은 그대로 → "전략만 바뀌고 인프라는 남는다". Week 3 페이퍼가 engine·risk를 그대로 재사용.
+**책임 분리 이유**: 전략은 신호만(stateless), risk는 순수 함수, engine은 상태·체결·비용. 새 전략 추가해도 risk·engine은 그대로 → "전략만 바뀌고 인프라는 남는다".
+
+**Week 3 재사용 범위 (정확히)**: Week 3 페이퍼는 **per-bar 처리 로직**(`check_exits`, `apply_funding`, `process_signal`)과 **risk 모듈 전부**, **IStrategy/Signal**을 재사용한다. 단 **바깥 루프만 다름** — Week 2는 과거 캔들을 배치로 재생, Week 3은 새 봉이 닫힐 때마다 실시간으로 같은 per-bar 함수를 호출. 그래서 per-bar step을 engine의 배치 루프와 분리해 함수로 빼둔다 (engine.py는 "캔들을 순회하며 per-bar step을 호출"만).
 
 ## 5. 핵심 인터페이스 (lock — Week 3가 그대로 재사용)
 
@@ -211,7 +213,9 @@ RSI(14) > 70 → short 신호, suggested_stop = entry + ATR(14) × k
 
 ```
 net(비용 차감) 기준 + gross 병기:
-  Sharpe        평균수익/표준편차 × √(연환산). 1h봉 → √(24×365)
+  Sharpe        **per-bar 자본 수익률**(equity_curve의 봉 단위 % 변화)의
+                평균/표준편차 × √(연환산). 1h봉 → √(24×365). per-trade 아님.
+                WHY per-bar: 표준 정의이고, 거래 빈도와 무관하게 위험 보정됨.
   max drawdown  자본 곡선 최대 고점→저점 낙폭
   win rate      net pnl > 0 거래 비율
   profit factor 총이익/총손실
