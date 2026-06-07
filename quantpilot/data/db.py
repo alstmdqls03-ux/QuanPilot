@@ -27,5 +27,7 @@ def init_db(engine) -> None:
     """모든 테이블 생성 (이미 있으면 무시). 앱/테스트 시작 시 1회 호출."""
     # models를 import해야 Base.metadata에 테이블이 등록됨.
     from quantpilot.data import models  # noqa: F401
+    # 페이퍼 상태/거래 테이블도 같은 Base에 등록(단일 create_all 경로 유지).
+    from quantpilot.paper import models as _paper_models  # noqa: F401
 
     Base.metadata.create_all(engine)
