@@ -86,7 +86,7 @@ def _open_position(side, bar, stop, capital, ct_val, lot_sz, leverage,
     try:
         assert_stop_within_liquidation(entry, stop, leverage, side)
         sizing = calculate_position_size(capital, 0.05, entry, stop, ct_val, lot_sz,
-                                         leverage=leverage, fee_bps=fee_bps, side=side)
+                                         leverage=leverage, fee_bps=fee_bps)
     except (StopBeyondLiquidationError, InsufficientCapitalError):
         return None, 0.0
     targets = build_targets(entry, stop, side)
@@ -105,36 +105,39 @@ def run_backtest(candles, strategy, capital, ct_val, lot_sz, leverage,
     open_fee = 0.0
     trades: list[Trade] = []
     curve: list[tuple[int, float]] = []
+    pending_fills: list[Fill] = []
     rows = candles.reset_index().to_dict("records")  # ts 포함 dict 리스트
 
-    def _finalize(pos, fills, last_ts):
-        # 한 포지션의 fills를 Trade로 집계
-        contracts = pos.original_contracts
+    def _build_trade(pos, fills, last_ts, funding):
+        # 한 포지션의 fills를 Trade로 집계(보고용). equity는 호출부에서 체결 즉시 반영됨.
         gross = sum(f.pnl_gross for f in fills)
         fees = open_fee + sum(f.fee for f in fills)
-        notional = contracts * pos.entry * ct_val
-        funding = funding_between(funding_events, notional, pos.side,
-                                  pos.opened_ts, last_ts)
-        net = gross - fees - funding
-        avg_exit = sum(f.price * f.contracts for f in fills) / max(1, sum(f.contracts for f in fills))
-        return Trade(side=pos.side, entry=pos.entry, exit=avg_exit, contracts=contracts,
-                     pnl_gross=gross, fees=fees, funding=funding, pnl_net=net,
+        sold = sum(f.contracts for f in fills)
+        avg_exit = sum(f.price * f.contracts for f in fills) / sold if sold else pos.entry
+        return Trade(side=pos.side, entry=pos.entry, exit=avg_exit,
+                     contracts=pos.original_contracts, pnl_gross=gross, fees=fees,
+                     funding=funding, pnl_net=gross - fees - funding,
                      opened_ts=pos.opened_ts, closed_ts=last_ts,
                      reason=fills[-1].reason if fills else "exit_signal")
 
-    pending_fills: list[Fill] = []
     for i in range(strategy.lookback, len(rows)):
         bar = rows[i]
         window = candles.iloc[i - strategy.lookback + 1: i + 1]
 
-        # 1) 열린 포지션 → 손절/익절 체결
+        # 1) 열린 포지션 → 손절/익절 체결. 체결분은 즉시 equity에 실현(부분익절 포함).
+        #    WHY 즉시 실현: 부분익절 실현손익을 청산까지 미루면 그 봉에서 equity 곡선이
+        #    가짜로 하락(체결분이 미실현에서 빠지는데 실현엔 안 더해짐) → Sharpe/MaxDD 왜곡.
         if position is not None:
             position2, fills = check_exits(position, bar, fee_bps, slippage_bps, ct_val)
-            pending_fills.extend(fills)
+            if fills:
+                equity += sum(f.pnl_gross for f in fills) - sum(f.fee for f in fills)
+                pending_fills.extend(fills)
             if position2 is None:  # 완전 청산됨
-                trades.append(_finalize(position, pending_fills, bar["ts"]))
-                equity += sum(f.pnl_gross for f in pending_fills)  # 실현 손익 반영
-                equity -= trades[-1].fees + trades[-1].funding
+                notional = position.original_contracts * position.entry * ct_val
+                funding = funding_between(funding_events, notional, position.side,
+                                          position.opened_ts, bar["ts"])
+                equity -= funding
+                trades.append(_build_trade(position, pending_fills, bar["ts"], funding))
                 position, open_fee, pending_fills = None, 0.0, []
             else:
                 position = position2
@@ -147,17 +150,22 @@ def run_backtest(candles, strategy, capital, ct_val, lot_sz, leverage,
             position, open_fee = _open_position(
                 signal.side, bar, signal.suggested_stop, equity, ct_val, lot_sz,
                 leverage, fee_bps, slippage_bps)
+            if position is not None:
+                equity -= open_fee  # 진입 수수료 즉시 실현
             pending_fills = []
         elif signal.side == "exit" and position is not None:
             fill = _close_fill(position, bar["close"], position.contracts, bar["ts"],
                                "exit_signal", fee_bps, slippage_bps, ct_val)
+            equity += fill.pnl_gross - fill.fee
             pending_fills.append(fill)
-            trades.append(_finalize(position, pending_fills, bar["ts"]))
-            equity += sum(f.pnl_gross for f in pending_fills)
-            equity -= trades[-1].fees + trades[-1].funding
+            notional = position.original_contracts * position.entry * ct_val
+            funding = funding_between(funding_events, notional, position.side,
+                                      position.opened_ts, bar["ts"])
+            equity -= funding
+            trades.append(_build_trade(position, pending_fills, bar["ts"], funding))
             position, open_fee, pending_fills = None, 0.0, []
 
-        # 4) equity 곡선 (열린 포지션 평가손익 포함)
+        # 4) equity 곡선 (실현분 equity + 잔여 계약 미실현)
         unreal = 0.0
         if position is not None:
             unreal = _pnl(position.side, position.entry, bar["close"],

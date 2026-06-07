@@ -25,3 +25,14 @@ def test_stop_beyond_liq_raises():
     # stop을 청산보다 멀게(75) 두면 거부
     with pytest.raises(StopBeyondLiquidationError):
         assert_stop_within_liquidation(entry=100.0, stop=75.0, leverage=5, side="long")
+
+
+def test_stop_within_liq_ok_short():
+    # 5x short: liq ≈ 119.5, 안전구역 안. stop=105는 OK.
+    assert_stop_within_liquidation(entry=100.0, stop=105.0, leverage=5, side="short")
+
+
+def test_stop_beyond_liq_raises_short():
+    # 숏 stop을 청산보다 멀게(125) 두면 거부
+    with pytest.raises(StopBeyondLiquidationError):
+        assert_stop_within_liquidation(entry=100.0, stop=125.0, leverage=5, side="short")

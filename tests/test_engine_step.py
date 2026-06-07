@@ -44,3 +44,25 @@ def test_no_exit_when_bar_inside_range():
     new_pos, fills = check_exits(pos, _bar(2, high=101, low=99, close=100),
                                  fee_bps=5, slippage_bps=0, ct_val=0.01)
     assert new_pos is pos and fills == []
+
+
+def test_stop_hit_closes_short():
+    # 숏 손절: 봉 high가 stop(105) 위로 → 전액 청산
+    pos = Position(side="short", entry=100.0, contracts=10, stop=105.0,
+                   targets_remaining=[(90.0, 1.0)], opened_ts=1)
+    new_pos, fills = check_exits(pos, _bar(2, high=106, low=99, close=104),
+                                 fee_bps=5, slippage_bps=0, ct_val=0.01)
+    assert new_pos is None
+    assert len(fills) == 1 and fills[0].reason == "stop"
+
+
+def test_partial_tp_reduces_contracts_short():
+    # 숏 분할익절: 봉 low가 첫 타겟(95) 아래 닿음(90은 미도달), stop 미발동 → 50%만 익절
+    pos = Position(side="short", entry=100.0, contracts=10, stop=105.0,
+                   targets_remaining=[(95.0, 0.5), (90.0, 0.5)], opened_ts=1)
+    new_pos, fills = check_exits(pos, _bar(2, high=101, low=94, close=96),
+                                 fee_bps=5, slippage_bps=0, ct_val=0.01)
+    assert new_pos is not None
+    assert new_pos.contracts == 5
+    assert len(new_pos.targets_remaining) == 1
+    assert fills[0].reason == "tp1"
