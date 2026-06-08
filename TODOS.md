@@ -76,6 +76,13 @@ Week 3는 $0 페이퍼라 아래는 의도적 단순화로 남겨둠. 실거래 
 - [ ] **[pre-live] 봉 마감 정밀도(confirm 필드)** — 페이퍼 루프는 Week 1 `drop_unclosed`
   (벽시계 기준)에 의존. 로컬 시계가 OKX보다 밀리면 1봉 지연. 이미 Week 1 pre-live blocker로
   등록된 항목이 페이퍼에도 그대로 적용됨(위 candle finality 항목 참조).
+- [ ] **[Week 4] panic 정지가 UTC 자정에 풀림** — `process_bar` 0단계가 새 UTC 날에
+  `halted=False`로 리셋하는데, 이게 서킷브레이커 정지뿐 아니라 **수동 panic 정지도 해제**한다.
+  23:55에 panic 쳐도 다음날 00:01에 루프가 재가동됨(킬스위치 멘탈모델 위반). `panic_halted`를
+  별도 플래그로 분리하거나 수동 해제 전까지 유지하도록 보완. (Week 3 final review)
+- [ ] **[Week 4] parity 테스트에 분할익절 경로 추가** — 현재 `test_paper_parity`는 진입→손절
+  (flat) 단일 경로만 검증. tp1 체결 후 stop(또는 exit_signal)로 닫히는 `pending_fills` 누적
+  경로가 가장 복잡한데 미검증. tp1→stop 봉 시퀀스로 두 번째 parity 케이스 추가. (Week 3 final review)
 
 ## 유지보수 (cosmetic, 급하지 않음) — Week 1 테스트 린트 빚
 
