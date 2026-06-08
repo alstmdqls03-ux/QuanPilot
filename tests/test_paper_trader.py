@@ -114,6 +114,10 @@ def test_process_bar_funding_deducted_on_close():
     bar = {"ts": ts, "open": 100.0, "high": 96.0, "low": 89.0, "close": 90.0}
     st, trades = process_bar(ctx, st, bar, window, funding_events=fund)
     assert trades and trades[0].funding != 0.0
+    # WHY 정밀 검증: notional = original_contracts × entry × ct_val = 10×100×0.01 = 10
+    # funding = notional × rate = 10 × 0.001 = 0.01 (long은 양수 비용)
+    assert abs(trades[0].funding - 0.01) < 1e-9, (
+        f"funding 정확도 불일치: {trades[0].funding} != 0.01")
 
 
 def test_circuit_breaker_blocks_entry():
@@ -187,12 +191,12 @@ def _seed_candles(session, symbol, timeframe, ohlc_rows):
 
 
 def test_run_one_tick_processes_new_bars(session):
-    from quantpilot.paper.store import PaperState, make_run_key
+    from quantpilot.paper.store import PaperState, make_run_key, recent_trades
     from quantpilot.paper.trader import TickContext, run_one_tick
     tf = 3_600_000
     base = 1_700_000_000_000
     rows = [(base + i * tf, 100.0, 100.0, 100.0, 100.0) for i in range(3)]
-    rows.append((base + 3 * tf, 100.0, 100.0, 89.0, 90.0))  # 마지막 봉 급락
+    rows.append((base + 3 * tf, 100.0, 100.0, 89.0, 90.0))  # 마지막 봉 급락 → 손절
     _seed_candles(session, "BTC-USDT-SWAP", "1h", rows)
     rk = make_run_key("BTC-USDT-SWAP", "1h", "t-long")
     ctx = TickContext(session=session, client=None, symbol="BTC-USDT-SWAP",
@@ -203,11 +207,20 @@ def test_run_one_tick_processes_new_bars(session):
                     day_start_ts=0)
     st, trades = run_one_tick(ctx, st)
     assert st.last_processed_bar_ts == base + 3 * tf   # 마지막 봉까지 진행
-    # 상태가 영속됐는지: 새 로드로 확인
+    # WHY equity != 초기값: 진입 수수료 차감 후 손절 손실이 실현됐으므로 1000보다 작아야 함
+    assert st.equity != 1000.0, "진입+손절 후 equity가 변하지 않음 — 수수료/손실 미반영 의심"
+    assert st.equity < 1000.0, "손절 손실로 equity가 줄어야 함"
+    # WHY 거래 적재 확인: 손절이 발생했으므로 DB에 적어도 1건 기록돼야 함
+    db_trades = recent_trades(session, rk, 100)
+    assert len(db_trades) >= 1, "손절 거래가 DB에 없음"
+    # 상태가 영속됐는지: 새 로드로 확인 (equity 포함)
     from quantpilot.paper.store import load_state
     again = load_state(session, rk, symbol="BTC-USDT-SWAP", timeframe="1h",
                        strategy="t-long", capital=1000.0, day_start_ts=0)
     assert again.last_processed_bar_ts == base + 3 * tf
+    # WHY equity 일치: persist_tick이 단일 commit이므로 재로드된 equity가 in-memory와 같아야 함
+    assert again.equity == st.equity, (
+        f"재로드 equity({again.equity}) != in-memory equity({st.equity})")
 
 
 def test_run_one_tick_atomic_no_duplicate_trades_on_restart(session):
@@ -343,3 +356,143 @@ def test_load_state_returns_persisted_clean_values(session):
         f"재로드된 equity({reloaded.equity})가 dirty 값(99999)이 아닌 clean 값({clean_equity})이어야 함")
     assert reloaded.last_processed_bar_ts == clean_ts, (
         f"재로드된 ts({reloaded.last_processed_bar_ts})가 clean_ts({clean_ts})여야 함")
+
+
+# ─── 숏 사이드 손절 test ──────────────────────────────────────────────────────
+
+class _ShortOnceStrategy(IStrategy):
+    """첫 진입 가능 시점에 short 1회(stop=price+5). 숏 손절 경로 검증용."""
+    name = "t-short"
+
+    def __init__(self):
+        self.timeframe = "1h"
+        self.lookback = 2
+        self._entered = False
+
+    def generate_signal(self, window, open_position):
+        price = float(window["close"].iloc[-1])
+        if open_position is None and not self._entered:
+            self._entered = True
+            return Signal("short", 1.0, price + 5.0, {})
+        return Signal("hold", 0.0, None, {})
+
+
+def test_process_bar_short_stop_closes_and_realizes():
+    """숏 포지션에서 stop-out 경로 검증: long 대칭 테스트.
+
+    WHY 별도 테스트: 숏 check_exits는 high≥stop 조건을 사용하며, PnL 부호(entry-exit)가
+    롱과 반대. 슬리피지도 청산 방향이 'buy'(위로 불리)로 뒤집힌다. 롱 손절 테스트만으로는
+    이 분기들이 커버되지 않음.
+
+    시나리오: entry=100.0, stop=105.0, side="short".
+    bar의 high=106 ≥ stop=105 → 전량 손절.
+    WHY equity < 진입 전: 숏 손절은 stop 가격이 entry보다 높으므로 entry-stop < 0 → 손실.
+    """
+    from quantpilot.backtest.models import Position
+    from quantpilot.paper.trader import process_bar
+    ctx = _ctx(_HoldStrategy())
+    st = _state()
+    # 숏: entry=100.0, stop=105.0 (entry보다 위). 손절 시 pnl = entry-exit < 0.
+    st.position = Position(side="short", entry=100.0, contracts=10, stop=105.0,
+                           targets_remaining=[(95.0, 0.33), (90.0, 0.33), (85.0, 0.34)],
+                           opened_ts=1_700_000_000_000, original_contracts=10)
+    open_fee = 0.5
+    st.open_fee = open_fee
+    st.equity -= open_fee  # 진입 수수료 이미 차감된 상태 시뮬레이션
+    # WHY eq_pre_entry: pnl_net = pnl_gross - (open_fee + close_fee) - funding
+    # equity 경로: eq_pre_entry - open_fee + (pnl_gross - close_fee) = eq_pre_entry + pnl_net
+    eq_pre_entry = st.equity + open_fee  # = 1000.0 (진입 전 원금)
+    ts = 1_700_003_600_000
+    window = _window([100.0, 102.0], ts)
+    # high=106 ≥ stop=105 → 숏 손절 발동
+    bar = {"ts": ts, "open": 102.0, "high": 106.0, "low": 101.0, "close": 102.0}
+    st, trades = process_bar(ctx, st, bar, window)
+    assert st.position is None, "손절 후 포지션이 남아 있음"
+    assert len(trades) == 1, f"거래 수 {len(trades)} != 1"
+    assert trades[0].reason == "stop", f"reason={trades[0].reason}, expected 'stop'"
+    assert trades[0].side == "short"
+    # 숏 손절: stop=105보다 높은 가격(슬리피지 포함)에서 buy 청산 → 손실
+    assert st.equity < eq_pre_entry, "숏 손절 손실로 equity가 줄어야 함"
+    assert st.daily_realized_pnl < 0, "숏 손절은 일일 실현 PnL을 감소시켜야 함"
+    # 보존 불변식: 최종 equity == 진입 전 원금 + pnl_net
+    assert abs(st.equity - (eq_pre_entry + trades[0].pnl_net)) < 1e-6, (
+        f"equity 보존 불일치: {st.equity} != {eq_pre_entry + trades[0].pnl_net}")
+
+
+# ─── 열린 포지션 재시작 (restart-with-open-position) test ───────────────────
+
+def test_restart_with_open_position_then_stop(session):
+    """열린 포지션이 DB에 있는 상태에서 재시작한 뒤 손절 봉을 처리하는 경로 검증.
+
+    WHY 이 테스트: store.load_state가 open_fee/targets_remaining/pending_fills를
+    올바르게 역직렬화해서 금융 로직이 실행되는지 e2e로 확인. 역직렬화 오류는
+    포지션이 사라지거나 잘못된 PnL이 계산되는 조용한 버그를 유발함.
+
+    단계:
+      (a) 충분한 warmup + 진입봉 적재 → run_one_tick → position 열림 확인 + DB 저장 확인
+      (b) 손절봉 추가 적재
+      (c) load_state로 fresh 재시작 시뮬 → run_one_tick(HoldStrategy) → 손절 실현 확인
+
+    WHY HoldStrategy for restart tick: 재시작 시 신호 전략 인스턴스가 새로 생성되므로
+    _entered 플래그가 초기화돼 포지션 청산 직후 즉시 재진입하는 코너케이스가 발생.
+    재시작 안전성 검증의 핵심은 load_state 역직렬화 + 손절 처리이므로, 재진입 신호를
+    내지 않는 HoldStrategy로 재시작 틱을 구동한다.
+    """
+    from quantpilot.paper.store import PaperState, load_state, make_run_key, recent_trades
+    from quantpilot.paper.trader import TickContext, run_one_tick
+    tf = 3_600_000
+    base = 1_700_000_000_000
+    symbol = "BTC-USDT-SWAP"
+    rk = make_run_key(symbol, "1h", "t-long")
+
+    # (a) warmup 2봉 + 진입봉 1봉: 진입만 일어나고 손절은 아직 없음
+    # high=low=close=100 → stop(95) 미발동, TP(~105)도 미발동
+    rows_a = [(base + i * tf, 100.0, 101.0, 99.0, 100.0) for i in range(3)]
+    _seed_candles(session, symbol, "1h", rows_a)
+
+    ctx_entry = TickContext(session=session, client=None, symbol=symbol,
+                            timeframe="1h", strategy=_LongOnceStrategy(), capital=1000.0,
+                            leverage=3, ct_val=0.01, lot_sz=1.0, run_key=rk)
+    st0 = PaperState(run_key=rk, symbol=symbol, timeframe="1h",
+                     strategy="t-long", equity=1000.0, day_start_equity=1000.0,
+                     day_start_ts=0)
+    st0, _ = run_one_tick(ctx_entry, st0)
+
+    # 진입됐는지 확인
+    assert st0.position is not None, "warmup+진입봉 후 포지션이 열려야 함"
+    assert st0.position.side == "long"
+    assert st0.open_fee > 0
+
+    # DB에서 재로드해도 포지션이 복원돼야 함 (직렬화 round-trip)
+    st_reloaded_a = load_state(session, rk, symbol=symbol, timeframe="1h",
+                                strategy="t-long", capital=1000.0, day_start_ts=0)
+    assert st_reloaded_a.position is not None, (
+        "DB reload 후 position이 복원되지 않음 — 직렬화 실패")
+    assert st_reloaded_a.open_fee > 0, "open_fee가 DB에서 복원되지 않음"
+    assert len(st_reloaded_a.position.targets_remaining) > 0, (
+        "targets_remaining이 DB에서 복원되지 않음")
+
+    # (b) 손절봉 1개 추가: low=89 ≤ stop=95
+    _seed_candles(session, symbol, "1h",
+                  [(base + 3 * tf, 90.0, 96.0, 89.0, 90.0)])
+
+    # (c) fresh 재시작: load_state로 상태 복원 후 run_one_tick
+    # WHY HoldStrategy: 손절 후 즉시 재진입하지 않도록 → 재시작 역직렬화 경로만 검증
+    st_fresh = load_state(session, rk, symbol=symbol, timeframe="1h",
+                          strategy="t-long", capital=1000.0, day_start_ts=0)
+    eq_pre_entry = st_fresh.equity + st_fresh.open_fee  # 진입 전 원금 기준(보존식)
+
+    ctx_hold = TickContext(session=session, client=None, symbol=symbol,
+                           timeframe="1h", strategy=_HoldStrategy(), capital=1000.0,
+                           leverage=3, ct_val=0.01, lot_sz=1.0, run_key=rk)
+    st_final, trades_b = run_one_tick(ctx_hold, st_fresh)
+
+    # 손절 후 포지션 없음
+    assert st_final.position is None, "손절 후 포지션이 남아 있음"
+    # 정확히 1건의 거래(손절)
+    db_trades = recent_trades(session, rk, 100)
+    assert len(db_trades) == 1, f"DB 거래 수 {len(db_trades)} != 1"
+    assert db_trades[0].reason == "stop", f"reason={db_trades[0].reason}"
+    # equity 보존: 최종 equity == 진입 전 원금 + pnl_net
+    assert abs(st_final.equity - (eq_pre_entry + db_trades[0].pnl_net)) < 1e-6, (
+        f"equity 보존 불일치: {st_final.equity} != {eq_pre_entry + db_trades[0].pnl_net}")
