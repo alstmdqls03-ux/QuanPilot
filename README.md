@@ -94,6 +94,66 @@ WantedBy=default.target
 
 ---
 
+## Week 4 — 7일 페이퍼런
+
+> 실거래(진짜 돈)는 Week 5+ 전까지 없음.
+
+### 빌드된 것
+
+- **측정**: `paper-report` 명령이 Sharpe·MaxDD·승률·누적 PnL·총 거래수를 출력.
+- **안전**: `panic` 킬스위치가 *도는 루프*도 멈춤 — 루프가 다음 틱에 halt 플래그를 읽어 자동 종료.
+- **회전 파일 로깅**: `paper` 루프가 `logs/paper.log`에 기록 (10 MB × 5개 rotation).
+
+### 런 시작
+
+```bash
+tmux new -s paper
+./scripts/run-paper.sh
+# Ctrl-b d 로 detach. 재접속: tmux attach -t paper
+```
+
+`run-paper.sh`는 30일치 캔들·funding을 먼저 시드한 뒤 페이퍼 루프를 시작합니다.
+심볼·타임프레임·전략·폴 간격은 환경변수로 덮어쓸 수 있습니다:
+
+```bash
+SYMBOL=ETH-USDT-SWAP TIMEFRAME=15m STRATEGY=rsi-mr POLL=30 ./scripts/run-paper.sh
+```
+
+### 점검
+
+```bash
+quantpilot paper-status          # 현재 자본·포지션·브레이커 상태·정지 여부
+quantpilot paper-logs --limit 20 # 최근 거래 이벤트
+quantpilot paper-report          # Sharpe / MaxDD / 승률 요약
+```
+
+### 비상정지
+
+루프가 실행 중인 상태에서 **다른 셸**에서:
+
+```bash
+quantpilot panic
+```
+
+루프가 다음 틱(최대 `--poll-seconds` 초)에 halt 플래그를 감지하고 자동 종료합니다.
+재시작하면 halt 상태가 유지되므로, 원인을 확인한 뒤 DB에서 `halted = 0`으로 리셋해야 합니다.
+
+### 7일 후
+
+```bash
+quantpilot paper-report
+```
+
+Sharpe·MaxDD·승률을 확인해 Week 5(실거래) 게이트 판단 기준으로 활용합니다.
+(실거래 전 최소 기준은 `TODOS.md` pre-live blocker 섹션에 명시.)
+
+### 한계
+
+`TODOS.md`의 pre-live blocker 항목(confirm 주문 필드, panic 중 funding 미처리, JSON 방어 코드)은
+Week 5 진입 전에 처리해야 합니다.
+
+---
+
 ## 테스트
 ```bash
 pytest             # 빠른 단위 테스트 (fixture 기반)

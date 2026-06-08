@@ -20,6 +20,9 @@ venv/
 # WHY: backtest 명령이 루트에 생성하는 차트는 재생성 가능한 산출물이라 추적 안 함.
 backtest_*.png
 
+# 페이퍼 런 로그 (런타임 산출물)
+logs/
+
 # OS / 에디터
 .DS_Store
 .idea/
