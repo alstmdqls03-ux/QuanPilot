@@ -175,3 +175,56 @@ def test_panic_close_noop_without_position():
     st = _state()
     trade = panic_close(ctx, st, last_price=102.0, last_ts=1)
     assert trade is None and st.halted is True
+
+
+def _seed_candles(session, symbol, timeframe, ohlc_rows):
+    """ohlc_rows: [(ts, o,h,l,c), ...] → candles 테이블에 직접 적재."""
+    from quantpilot.data.models import Candle
+    for ts, o, h, low, c in ohlc_rows:
+        session.add(Candle(exchange="okx", symbol=symbol, timeframe=timeframe, ts=ts,
+                           open=o, high=h, low=low, close=c, volume=1.0, inserted_at=ts))
+    session.commit()
+
+
+def test_run_one_tick_processes_new_bars(session):
+    from quantpilot.paper.store import PaperState, make_run_key
+    from quantpilot.paper.trader import TickContext, run_one_tick
+    tf = 3_600_000
+    base = 1_700_000_000_000
+    rows = [(base + i * tf, 100.0, 100.0, 100.0, 100.0) for i in range(3)]
+    rows.append((base + 3 * tf, 100.0, 100.0, 89.0, 90.0))  # 마지막 봉 급락
+    _seed_candles(session, "BTC-USDT-SWAP", "1h", rows)
+    rk = make_run_key("BTC-USDT-SWAP", "1h", "t-long")
+    ctx = TickContext(session=session, client=None, symbol="BTC-USDT-SWAP",
+                      timeframe="1h", strategy=_LongOnceStrategy(), capital=1000.0,
+                      leverage=3, ct_val=0.01, lot_sz=1.0, run_key=rk)
+    st = PaperState(run_key=rk, symbol="BTC-USDT-SWAP", timeframe="1h",
+                    strategy="t-long", equity=1000.0, day_start_equity=1000.0,
+                    day_start_ts=0)
+    st, trades = run_one_tick(ctx, st)
+    assert st.last_processed_bar_ts == base + 3 * tf   # 마지막 봉까지 진행
+    # 상태가 영속됐는지: 새 로드로 확인
+    from quantpilot.paper.store import load_state
+    again = load_state(session, rk, symbol="BTC-USDT-SWAP", timeframe="1h",
+                       strategy="t-long", capital=1000.0, day_start_ts=0)
+    assert again.last_processed_bar_ts == base + 3 * tf
+
+
+def test_run_one_tick_dedup_no_reprocess(session):
+    from quantpilot.paper.store import PaperState, make_run_key
+    from quantpilot.paper.trader import TickContext, run_one_tick
+    tf = 3_600_000
+    base = 1_700_000_000_000
+    rows = [(base + i * tf, 100.0, 101.0, 99.0, 100.0) for i in range(3)]
+    _seed_candles(session, "BTC-USDT-SWAP", "1h", rows)
+    rk = make_run_key("BTC-USDT-SWAP", "1h", "t-hold")
+    ctx = TickContext(session=session, client=None, symbol="BTC-USDT-SWAP",
+                      timeframe="1h", strategy=_HoldStrategy(), capital=1000.0,
+                      leverage=3, ct_val=0.01, lot_sz=1.0, run_key=rk)
+    st = PaperState(run_key=rk, symbol="BTC-USDT-SWAP", timeframe="1h",
+                    strategy="t-hold", equity=1000.0, day_start_equity=1000.0,
+                    day_start_ts=0)
+    st, _ = run_one_tick(ctx, st)
+    last = st.last_processed_bar_ts
+    st, trades2 = run_one_tick(ctx, st)   # 새 봉 없음
+    assert st.last_processed_bar_ts == last and trades2 == []

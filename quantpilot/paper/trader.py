@@ -3,12 +3,15 @@
 """
 from __future__ import annotations
 
+import sys
+import time
 from dataclasses import dataclass
 
 import pandas as pd
 
 from quantpilot.backtest.costs import funding_between
 from quantpilot.backtest.engine import build_trade, check_exits, close_fill, open_position
+from quantpilot.paper import store
 from quantpilot.paper.store import PaperState
 from quantpilot.risk.circuit_breaker import is_new_utc_day, should_halt
 
@@ -142,3 +145,72 @@ def _close_out(ctx: TickContext, state: PaperState, last_ts: int, funding_events
     state.open_fee = 0.0
     state.pending_fills = []
     return trade
+
+
+def run_one_tick(ctx: TickContext, state: PaperState):
+    """1틱: (client 있으면)폴링 → 최신 닫힌 봉 로드 → 새 봉만 process_bar → 영속.
+
+    엔진 백테와 동일하게 결정 시작점은 봉 인덱스 lookback(첫 lookback개는 warmup window).
+
+    WHY engine-parity 룰: backtest.run_backtest가 iloc >= lookback에서만 신호를 내므로
+    페이퍼도 동일 기준을 지켜야 백테 결과와 비교 가능(같은 전략·같은 데이터 → 같은 신호).
+    WHY collect_ohlcv만 2일: 증분 폴링이므로 최근 2일치만 가져오면 충분. 더 길게 잡으면
+    불필요한 API 호출·upsert 비용이 증가.
+    """
+    from sqlalchemy import select
+
+    from quantpilot.backtest.data_loader import load_candles_df
+    from quantpilot.data.collector import collect_ohlcv
+    from quantpilot.data.models import FundingRate
+
+    if ctx.client is not None:
+        # 증분 폴링. 실패는 호출부(run_loop)가 try로 흡수 → 루프 생존.
+        collect_ohlcv(ctx.session, ctx.client, ctx.symbol, ctx.timeframe,
+                      days=2, now_ms=int(time.time() * 1000))
+
+    df = load_candles_df(ctx.session, ctx.symbol, ctx.timeframe)
+    if df.empty:
+        return state, []
+
+    funding_events = [
+        (f.ts, f.funding_rate) for f in ctx.session.execute(
+            select(FundingRate).where(FundingRate.symbol == ctx.symbol)
+            .order_by(FundingRate.ts)).scalars().all()]
+
+    lookback = ctx.strategy.lookback
+    last = state.last_processed_bar_ts
+    all_trades = []
+    for pos_iloc in range(len(df)):
+        t = int(df.index[pos_iloc])
+        if last is not None and t <= last:
+            continue                      # 이미 처리한 봉(중복 방지)
+        if pos_iloc < lookback:
+            # WHY 진행만 하고 process_bar 안 함: warmup window가 부족하면 지표 계산
+            # 불가 → 신호 오류. 백테(run_backtest)와 동일하게 lookback개까지는 스킵.
+            state.last_processed_bar_ts = t
+            continue
+        window = df.iloc[pos_iloc - lookback + 1: pos_iloc + 1]
+        bar = {"ts": t, "open": float(df.at[t, "open"]), "high": float(df.at[t, "high"]),
+               "low": float(df.at[t, "low"]), "close": float(df.at[t, "close"])}
+        state, trades = process_bar(ctx, state, bar, window, funding_events)
+        for tr in trades:
+            store.append_trade(ctx.session, ctx.run_key, tr)
+        all_trades.extend(trades)
+
+    store.save_state(ctx.session, state)
+    return state, all_trades
+
+
+def run_loop(ctx: TickContext, state: PaperState):
+    """무한 루프(얇은 래퍼). 폴링 실패는 흡수하고 다음 틱에서 재시도 → 루프 생존.
+
+    WHY 오류 흡수: 네트워크 순단이나 일시적 OKX API 오류로 루프가 죽으면 안 됨.
+    에러 로그만 남기고 다음 poll_seconds 뒤에 재시도. 심각한 계정 오류(권한 등)는
+    kill switch(panic_close)나 운영자 개입으로 처리 — 여기서 판별하지 않음.
+    """
+    while True:
+        try:
+            state, _ = run_one_tick(ctx, state)
+        except Exception as e:  # noqa: BLE001  운영 중 단발 오류로 죽지 않게
+            print(f"[paper] tick 오류(건너뜀): {e}", file=sys.stderr)
+        time.sleep(ctx.poll_seconds)
