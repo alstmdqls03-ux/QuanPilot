@@ -65,8 +65,12 @@ def load_state(session, run_key: str, *, symbol: str, timeframe: str,
         position=position, open_fee=open_fee, pending_fills=pending)
 
 
-def save_state(session, state: PaperState) -> None:
-    """상태를 upsert(원자적). 포지션 없으면 pos_* 전부 NULL."""
+def _apply_state_to_row(session, state: "PaperState") -> None:
+    """상태를 session에 반영(commit 없음). save_state / persist_tick 양쪽에서 재사용.
+
+    WHY 분리: 거래 행과 진행위치를 동일 commit에 묶는 persist_tick이 이 로직을 재사용하기
+    위해 commit을 호출부로 미룬 순수 row-mutation 헬퍼. 직접 호출하면 commit 없이 행만 바뀜.
+    """
     row = session.get(PaperStateRow, state.run_key)
     if row is None:
         row = PaperStateRow(run_key=state.run_key)
@@ -104,6 +108,28 @@ def save_state(session, state: PaperState) -> None:
         row.pos_opened_ts = p.opened_ts
         row.pos_open_fee = state.open_fee
         row.pos_pending_fills = json.dumps([f.__dict__ for f in state.pending_fills])
+
+
+def save_state(session, state: "PaperState") -> None:
+    """상태를 upsert(원자적). 포지션 없으면 pos_* 전부 NULL."""
+    _apply_state_to_row(session, state)
+    session.commit()
+
+
+def persist_tick(session, run_key: str, state: "PaperState", trades: "list[Trade]") -> None:
+    """한 틱의 청산 거래 + 상태를 단일 트랜잭션으로 영속(원자적).
+
+    WHY 원자성: 거래 행과 진행위치(last_processed_bar_ts)를 같은 commit에 묶어야,
+    프로세스가 틱 도중 죽어도 '거래는 기록됐는데 진행위치는 안 밀린' 불일치가 안 생긴다.
+    그 상태로 재시작하면 같은 봉을 재처리해 거래가 중복 적재됨(append-only라 못 거름).
+    """
+    for tr in trades:
+        session.add(PaperTradeRow(
+            run_key=run_key, side=tr.side, entry=tr.entry, exit=tr.exit,
+            contracts=tr.contracts, pnl_gross=tr.pnl_gross, fees=tr.fees,
+            funding=tr.funding, pnl_net=tr.pnl_net, opened_ts=tr.opened_ts,
+            closed_ts=tr.closed_ts, reason=tr.reason))
+    _apply_state_to_row(session, state)
     session.commit()
 
 

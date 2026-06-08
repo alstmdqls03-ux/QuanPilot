@@ -210,6 +210,32 @@ def test_run_one_tick_processes_new_bars(session):
     assert again.last_processed_bar_ts == base + 3 * tf
 
 
+def test_run_one_tick_atomic_no_duplicate_trades_on_restart(session):
+    from quantpilot.paper.store import PaperState, load_state, make_run_key, recent_trades
+    from quantpilot.paper.trader import TickContext, run_one_tick
+    tf = 3_600_000
+    base = 1_700_000_000_000
+    rows = [(base + i * tf, 100.0, 100.0, 100.0, 100.0) for i in range(3)]
+    rows.append((base + 3 * tf, 100.0, 100.0, 89.0, 90.0))  # 손절 발생 → 1 trade
+    _seed_candles(session, "BTC-USDT-SWAP", "1h", rows)
+    rk = make_run_key("BTC-USDT-SWAP", "1h", "t-long")
+    def _mk():
+        return TickContext(session=session, client=None, symbol="BTC-USDT-SWAP",
+                           timeframe="1h", strategy=_LongOnceStrategy(), capital=1000.0,
+                           leverage=3, ct_val=0.01, lot_sz=1.0, run_key=rk)
+    st = PaperState(run_key=rk, symbol="BTC-USDT-SWAP", timeframe="1h",
+                    strategy="t-long", equity=1000.0, day_start_equity=1000.0,
+                    day_start_ts=0)
+    st, _ = run_one_tick(_mk(), st)
+    n1 = len(recent_trades(session, rk, 100))
+    assert n1 == 1
+    # 재시작 시뮬: DB에서 상태 재로드 후 같은 봉으로 또 틱 → 중복 거래 없어야
+    st2 = load_state(session, rk, symbol="BTC-USDT-SWAP", timeframe="1h",
+                     strategy="t-long", capital=1000.0, day_start_ts=0)
+    st2, trades2 = run_one_tick(_mk(), st2)
+    assert trades2 == [] and len(recent_trades(session, rk, 100)) == 1  # 중복 없음
+
+
 def test_run_one_tick_dedup_no_reprocess(session):
     from quantpilot.paper.store import PaperState, make_run_key
     from quantpilot.paper.trader import TickContext, run_one_tick

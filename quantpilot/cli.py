@@ -300,14 +300,16 @@ def panic(symbol, timeframe, strategy):
                     strategy=strategy, capital=0.0, day_start_ts=0)
     inst = session.execute(select(Instrument).where(
         Instrument.symbol == symbol)).scalar_one_or_none()
+    if inst is None:
+        raise click.ClickException(
+            f"{symbol} Instrument 캐시 없음. 먼저 'quantpilot collect'를 실행하세요.")
     df = load_candles_df(session, symbol, timeframe)
     last_price = float(df["close"].iloc[-1]) if not df.empty else (
         st.position.entry if st.position else 0.0)
     last_ts = int(df.index[-1]) if not df.empty else _now_ms()
     ctx = TickContext(session=session, client=None, symbol=symbol, timeframe=timeframe,
                       strategy=None, capital=0.0, leverage=3,
-                      ct_val=inst.ct_val if inst else 0.01,
-                      lot_sz=inst.lot_sz if inst else 1.0, run_key=rk)
+                      ct_val=inst.ct_val, lot_sz=inst.lot_sz, run_key=rk)
     trade = panic_close(ctx, st, last_price=last_price, last_ts=last_ts)
     if trade is not None:
         append_trade(session, rk, trade)

@@ -193,11 +193,12 @@ def run_one_tick(ctx: TickContext, state: PaperState):
         bar = {"ts": t, "open": float(df.at[t, "open"]), "high": float(df.at[t, "high"]),
                "low": float(df.at[t, "low"]), "close": float(df.at[t, "close"])}
         state, trades = process_bar(ctx, state, bar, window, funding_events)
-        for tr in trades:
-            store.append_trade(ctx.session, ctx.run_key, tr)
         all_trades.extend(trades)
 
-    store.save_state(ctx.session, state)
+    # WHY persist_tick(단일 commit): 거래 행과 last_processed_bar_ts를 같은 트랜잭션에
+    # 묶어야 틱 도중 강제 종료돼도 '거래는 적재됐는데 진행위치는 안 밀린' 불일치가 없다.
+    # 불일치 상태로 재시작하면 같은 봉을 재처리해 거래가 중복 적재된다(append-only라 못 거름).
+    store.persist_tick(ctx.session, ctx.run_key, state, all_trades)
     return state, all_trades
 
 
