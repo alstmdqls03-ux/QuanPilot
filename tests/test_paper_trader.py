@@ -147,3 +147,31 @@ def test_utc_rollover_resets_and_allows_entry():
     assert st.halted is False
     assert st.day_start_equity == st.equity + st.open_fee or st.position is not None
     assert st.position is not None         # 리셋 후 진입 가능
+
+
+def test_panic_close_flattens_and_halts():
+    from quantpilot.backtest.models import Position
+    from quantpilot.paper.trader import panic_close
+    ctx = _ctx(_HoldStrategy())
+    st = _state()
+    st.position = Position(side="long", entry=100.0, contracts=10, stop=95.0,
+                           targets_remaining=[], opened_ts=1_700_000_000_000,
+                           original_contracts=10)
+    st.open_fee = 0.5
+    # WHY eq_pre 보정: _state()는 equity=1000 그대로, st.open_fee=0.5는 equity에서
+    # 아직 차감되지 않은 상태. build_trade 내부에서 pnl_net은 open_fee를 이미
+    # 비용에 포함하므로, 보존식 기준을 "진입 전 원금(open_fee 차감 전)"으로 맞춰야
+    # 이중 차감을 방지할 수 있다. 즉 eq_pre = equity + open_fee = 1000.5.
+    eq_pre = st.equity + st.open_fee
+    trade = panic_close(ctx, st, last_price=102.0, last_ts=1_700_003_600_000)
+    assert trade is not None and trade.reason == "panic"
+    assert st.position is None and st.halted is True
+    assert abs(st.equity - (eq_pre + trade.pnl_net)) < 1e-6  # last_price 기준 실현
+
+
+def test_panic_close_noop_without_position():
+    from quantpilot.paper.trader import panic_close
+    ctx = _ctx(_HoldStrategy())
+    st = _state()
+    trade = panic_close(ctx, st, last_price=102.0, last_ts=1)
+    assert trade is None and st.halted is True

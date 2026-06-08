@@ -106,6 +106,25 @@ def process_bar(ctx: TickContext, state: PaperState, bar: dict,
     return state, trades
 
 
+def panic_close(ctx: TickContext, state: PaperState, last_price: float,
+                last_ts: int):
+    """비상정지: 보유 포지션을 last_price에 전량 청산 + halted=True. Trade 반환(없으면 None).
+
+    WHY last_price=최신 닫힌 봉 종가: 페이퍼는 실주문이 없어 그게 가장 최근 관측가.
+    WHY halted=True 먼저: 포지션 유무와 관계없이 halt 플래그를 세워야 이후 process_bar가
+    신규 진입을 차단한다. 청산 실패(예외)가 발생해도 halt 상태는 유지돼야 함.
+    """
+    state.halted = True
+    if state.position is None:
+        return None
+    fill = close_fill(state.position, last_price, state.position.contracts, last_ts,
+                      "panic", ctx.fee_bps, ctx.slippage_bps, ctx.ct_val)
+    state.equity += fill.pnl_gross - fill.fee
+    state.daily_realized_pnl += fill.pnl_gross - fill.fee
+    state.pending_fills.append(fill)
+    return _close_out(ctx, state, last_ts, [])
+
+
 def _close_out(ctx: TickContext, state: PaperState, last_ts: int, funding_events):
     """완전 청산 마무리: funding 차감 + Trade 집계 + 포지션 비움. 청산된 Trade 반환.
 
