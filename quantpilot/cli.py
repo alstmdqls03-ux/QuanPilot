@@ -332,6 +332,7 @@ def panic(symbol, timeframe, strategy):
 @click.option("--limit", default=20, show_default=True, type=int)
 def paper_logs(symbol, timeframe, strategy, limit):
     """최근 페이퍼 거래 로그 출력."""
+    from quantpilot.paper.display import fmt_trade_line, summarize_trades
     from quantpilot.paper.store import make_run_key, recent_trades
 
     session, _ = _session()
@@ -340,11 +341,13 @@ def paper_logs(symbol, timeframe, strategy, limit):
     if not trades:
         click.echo(f"{rk}: 거래 없음.")
         return
+    click.echo(rk)
     for t in trades:
-        click.echo(
-            f"  {t.closed_ts}  {t.side:5s} {t.contracts}계약 "
-            f"{t.entry}→{t.exit}  net {t.pnl_net:+.2f}  [{t.reason}]"
-        )
+        click.echo("  " + fmt_trade_line(t))
+    click.echo("  " + "─" * 46)
+    # WHY '이 목록' 라벨: recent_trades(limit)로 잘린 부분집합 기준 요약임을 명시.
+    # 전체 누적·승률은 paper-report가 모든 거래로 계산해 담당한다.
+    click.echo("  이 목록 " + summarize_trades(trades))
 
 
 @cli.command(name="paper-report")
@@ -365,9 +368,18 @@ def paper_report(symbol, timeframe, strategy):
         click.echo(f"{rk}: equity 곡선 부족(아직 런 안 했거나 결정 봉 < 2). "
                    f"'quantpilot paper'로 런을 시작하세요.")
         return
+    from quantpilot.paper.display import summarize_trades
+
     trades = recent_trades(session, rk, 1_000_000)
     m = compute_metrics(curve, trades, periods_per_year(timeframe))
+    # 수익률은 상세 지표의 total_return과 동일 소스 → 두 값이 어긋나지 않게 재사용.
+    ret_pct = m["total_return"] * 100.0
     click.echo(f"{rk}  ({len(curve)}봉, {curve[0][0]}~{curve[-1][0]})")
+    # 사람이 먼저 읽는 평이한 요약(손익/자산) → 그 아래 기술 지표.
+    click.echo("  📊 손익 요약: " + summarize_trades(trades))
+    click.echo(f"  💰 자산(평가 포함, 곡선 마지막): {curve[-1][1]:,.2f}  "
+               f"(수익률 {ret_pct:+.2f}%)")
+    click.echo("  ── 상세 지표 ──")
     click.echo(f"  total_return: {m['total_return']}")
     click.echo(f"  sharpe:       {m['sharpe']}")
     click.echo(f"  max_drawdown: {m['max_drawdown']}")
