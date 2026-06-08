@@ -36,6 +36,64 @@ quantpilot backtest --strategy rsi-mr --symbol BTC-USDT-SWAP \
 > baseline `rsi-mr`는 수익성 보장이 아니라 파이프라인 검증용입니다. OOS Sharpe가
 > 음수로 나오면 "이 전략엔 edge가 없다"를 시스템이 정확히 말해주는 것입니다.
 
+## Week 3 — 페이퍼 트레이더
+
+> 실거래(진짜 돈)는 Week 5+ 전까지 없음. 페이퍼는 **$0 리스크** 시뮬레이션.
+
+### 사용법
+
+```bash
+# 1) 데이터 먼저 수집
+quantpilot collect --symbol BTC-USDT-SWAP --timeframe 1h --days 365
+quantpilot collect-funding --symbol BTC-USDT-SWAP --days 365
+
+# 2) 페이퍼 루프 시작 (포그라운드, Ctrl-C 로 중단)
+quantpilot paper --symbol BTC-USDT-SWAP --timeframe 1h --strategy rsi-mr \
+    --capital 1000 --leverage 3 --poll-seconds 60
+
+# 3) 상태 확인 (읽기 전용)
+quantpilot paper-status
+
+# 4) 최근 거래 로그
+quantpilot paper-logs --limit 20
+
+# 5) 비상정지 — 포지션 즉시 청산 + 신규 진입 차단
+quantpilot panic
+```
+
+### 운영 — 재시작 안전
+
+모든 상태(포지션·자본·정지여부·마지막 봉)가 SQLite(`paper_state` 테이블)에 저장됩니다.
+크래시·재부팅 후 같은 명령으로 다시 실행하면 자동 복구됩니다.
+
+**tmux 예시:**
+```bash
+tmux new -s paper
+quantpilot paper --symbol BTC-USDT-SWAP --timeframe 1h --strategy rsi-mr
+# Ctrl-b d 로 detach. 재접속: tmux attach -t paper
+```
+
+**systemd 유닛 예시** (경로·venv는 환경에 맞게):
+```ini
+[Unit]
+Description=QuantPilot paper trader
+After=network-online.target
+[Service]
+WorkingDirectory=/path/to/QuantPilot
+ExecStart=/path/to/QuantPilot/.venv/bin/quantpilot paper
+Restart=always
+RestartSec=10
+[Install]
+WantedBy=default.target
+```
+
+### 한계 (실거래 아님)
+
+- 실주문 없음 — 슬리피지·수수료는 파라미터로 시뮬레이션.
+- 실거래 전 필수 숙제: `TODOS.md`의 **pre-live blocker** 섹션 참조.
+
+---
+
 ## 테스트
 ```bash
 pytest             # 빠른 단위 테스트 (fixture 기반)

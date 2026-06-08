@@ -195,5 +195,153 @@ def backtest(strategy, symbol, timeframe, oos_months, capital, leverage, allow_g
     click.echo(f"equity curve 저장됨: {png}")
 
 
+def _paper_ctx_and_state(symbol, timeframe, strategy, capital, leverage):
+    """paper 루프 시작용 ctx+state 준비(세션·Instrument·전략).
+
+    WHY 헬퍼 분리: paper 명령이 전략 인스턴스화 + Instrument(ct_val/lot_sz) 조회 + state
+    복원을 한 번에 준비하도록 묶음. status/panic/logs는 더 가벼운 준비만 필요해 각자 처리.
+    """
+    from quantpilot.paper.store import load_state, make_run_key
+    from quantpilot.paper.trader import TickContext
+
+    if strategy not in STRATEGIES:
+        raise click.ClickException(
+            f"알 수 없는 전략 '{strategy}'. 사용 가능: {', '.join(STRATEGIES)}")
+    session, _ = _session()
+    inst = session.execute(select(Instrument).where(
+        Instrument.symbol == symbol)).scalar_one_or_none()
+    if inst is None:
+        raise click.ClickException(
+            f"{symbol} Instrument 캐시 없음. 먼저 'quantpilot collect'를 실행하세요.")
+    rk = make_run_key(symbol, timeframe, strategy)
+    state = load_state(session, rk, symbol=symbol, timeframe=timeframe,
+                       strategy=strategy, capital=capital, day_start_ts=_now_ms())
+    strat = STRATEGIES[strategy](timeframe=timeframe)
+    ctx = TickContext(session=session, client=None, symbol=symbol, timeframe=timeframe,
+                      strategy=strat, capital=capital, leverage=leverage,
+                      ct_val=inst.ct_val, lot_sz=inst.lot_sz, run_key=rk)
+    return session, ctx, state
+
+
+@cli.command()
+@click.option("--symbol", default="BTC-USDT-SWAP", show_default=True)
+@click.option("--timeframe", default="1h", show_default=True)
+@click.option("--strategy", default="rsi-mr", show_default=True)
+@click.option("--capital", default=1000.0, show_default=True, type=float)
+@click.option("--leverage", default=3, show_default=True, type=int)
+@click.option("--poll-seconds", default=60, show_default=True, type=int)
+def paper(symbol, timeframe, strategy, capital, leverage, poll_seconds):
+    """실시간 페이퍼 트레이딩 루프 시작(포그라운드, 재시작 안전)."""
+    from quantpilot.exchange.client import OKXClient
+    from quantpilot.paper.trader import run_loop
+
+    session, ctx, state = _paper_ctx_and_state(symbol, timeframe, strategy, capital, leverage)
+    client = OKXClient()
+    client.load_markets()
+    ctx.client = client
+    ctx.poll_seconds = poll_seconds
+    click.echo(
+        f"페이퍼 시작: {symbol} {timeframe} {strategy} "
+        f"(자본 {state.equity:.2f}, poll {poll_seconds}s). Ctrl-C로 중단."
+    )
+    try:
+        run_loop(ctx, state)
+    except KeyboardInterrupt:
+        click.echo("\n중단됨. 상태는 DB에 저장됨(다음 실행 시 이어받음).")
+
+
+@cli.command(name="paper-status")
+@click.option("--symbol", default="BTC-USDT-SWAP", show_default=True)
+@click.option("--timeframe", default="1h", show_default=True)
+@click.option("--strategy", default="rsi-mr", show_default=True)
+def paper_status(symbol, timeframe, strategy):
+    """현재 페이퍼 상태 출력(읽기 전용)."""
+    from quantpilot.paper.store import load_state, make_run_key, recent_trades
+    from quantpilot.paper.models import PaperStateRow
+
+    session, _ = _session()
+    rk = make_run_key(symbol, timeframe, strategy)
+    if session.get(PaperStateRow, rk) is None:
+        click.echo(f"{rk}: 페이퍼 상태 없음(아직 시작 안 함).")
+        return
+    st = load_state(session, rk, symbol=symbol, timeframe=timeframe,
+                    strategy=strategy, capital=0.0, day_start_ts=0)
+    click.echo(f"{rk}")
+    click.echo(
+        f"  equity: {st.equity:.2f}  (오늘 시작 {st.day_start_equity:.2f}, "
+        f"실현 PnL {st.daily_realized_pnl:+.2f})"
+    )
+    click.echo(f"  halted: {st.halted}   마지막 봉: {st.last_processed_bar_ts}")
+    if st.position is None:
+        click.echo("  포지션: 없음")
+    else:
+        p = st.position
+        click.echo(f"  포지션: {p.side} {p.contracts}계약 @ {p.entry} (stop {p.stop})")
+    click.echo(f"  최근 거래 {len(recent_trades(session, rk, 100))}건")
+
+
+@cli.command()
+@click.option("--symbol", default="BTC-USDT-SWAP", show_default=True)
+@click.option("--timeframe", default="1h", show_default=True)
+@click.option("--strategy", default="rsi-mr", show_default=True)
+def panic(symbol, timeframe, strategy):
+    """비상정지: 보유 포지션 즉시 청산(최신 봉 종가) + 정지 플래그."""
+    from quantpilot.backtest.data_loader import load_candles_df
+    from quantpilot.paper.store import append_trade, load_state, make_run_key, save_state
+    from quantpilot.paper.models import PaperStateRow
+    from quantpilot.paper.trader import TickContext, panic_close
+
+    session, _ = _session()
+    rk = make_run_key(symbol, timeframe, strategy)
+    if session.get(PaperStateRow, rk) is None:
+        click.echo(f"{rk}: 페이퍼 상태 없음. 할 일 없음.")
+        return
+    st = load_state(session, rk, symbol=symbol, timeframe=timeframe,
+                    strategy=strategy, capital=0.0, day_start_ts=0)
+    inst = session.execute(select(Instrument).where(
+        Instrument.symbol == symbol)).scalar_one_or_none()
+    df = load_candles_df(session, symbol, timeframe)
+    last_price = float(df["close"].iloc[-1]) if not df.empty else (
+        st.position.entry if st.position else 0.0)
+    last_ts = int(df.index[-1]) if not df.empty else _now_ms()
+    ctx = TickContext(session=session, client=None, symbol=symbol, timeframe=timeframe,
+                      strategy=None, capital=0.0, leverage=3,
+                      ct_val=inst.ct_val if inst else 0.01,
+                      lot_sz=inst.lot_sz if inst else 1.0, run_key=rk)
+    trade = panic_close(ctx, st, last_price=last_price, last_ts=last_ts)
+    if trade is not None:
+        append_trade(session, rk, trade)
+    save_state(session, st)
+    if trade is None:
+        click.echo(f"정지 플래그 set. 청산할 포지션 없음. (equity {st.equity:.2f})")
+    else:
+        click.echo(
+            f"비상청산 완료: {trade.side} → {last_price} "
+            f"(net {trade.pnl_net:+.2f}). 정지됨."
+        )
+
+
+@cli.command(name="paper-logs")
+@click.option("--symbol", default="BTC-USDT-SWAP", show_default=True)
+@click.option("--timeframe", default="1h", show_default=True)
+@click.option("--strategy", default="rsi-mr", show_default=True)
+@click.option("--limit", default=20, show_default=True, type=int)
+def paper_logs(symbol, timeframe, strategy, limit):
+    """최근 페이퍼 거래 로그 출력."""
+    from quantpilot.paper.store import make_run_key, recent_trades
+
+    session, _ = _session()
+    rk = make_run_key(symbol, timeframe, strategy)
+    trades = recent_trades(session, rk, limit)
+    if not trades:
+        click.echo(f"{rk}: 거래 없음.")
+        return
+    for t in trades:
+        click.echo(
+            f"  {t.closed_ts}  {t.side:5s} {t.contracts}계약 "
+            f"{t.entry}→{t.exit}  net {t.pnl_net:+.2f}  [{t.reason}]"
+        )
+
+
 if __name__ == "__main__":
     cli()
