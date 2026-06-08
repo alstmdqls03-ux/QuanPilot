@@ -9,9 +9,10 @@ import json
 from dataclasses import dataclass, field
 
 from sqlalchemy import select
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from quantpilot.backtest.models import Fill, Position, Trade
-from quantpilot.paper.models import PaperStateRow, PaperTradeRow
+from quantpilot.paper.models import PaperEquityRow, PaperStateRow, PaperTradeRow
 
 
 @dataclass
@@ -116,12 +117,13 @@ def save_state(session, state: "PaperState") -> None:
     session.commit()
 
 
-def persist_tick(session, run_key: str, state: "PaperState", trades: "list[Trade]") -> None:
-    """한 틱의 청산 거래 + 상태를 단일 트랜잭션으로 영속(원자적).
+def persist_tick(session, run_key: str, state: "PaperState", trades: "list[Trade]",
+                 equity_points: "list[tuple[int, float]]" = ()) -> None:
+    """한 틱의 청산 거래 + equity 포인트 + 상태를 단일 트랜잭션으로 영속(원자적).
 
-    WHY 원자성: 거래 행과 진행위치(last_processed_bar_ts)를 같은 commit에 묶어야,
-    프로세스가 틱 도중 죽어도 '거래는 기록됐는데 진행위치는 안 밀린' 불일치가 안 생긴다.
-    그 상태로 재시작하면 같은 봉을 재처리해 거래가 중복 적재됨(append-only라 못 거름).
+    WHY 원자성: 거래·equity·진행위치(last_processed_bar_ts)를 같은 commit에 묶어야,
+    틱 도중 강제 종료돼도 '일부만 적재된' 불일치가 안 생긴다. 재시작 시 같은 봉을 재처리해도
+    equity는 UNIQUE(run_key,ts) on_conflict로 중복 안 됨.
     """
     for tr in trades:
         session.add(PaperTradeRow(
@@ -129,6 +131,11 @@ def persist_tick(session, run_key: str, state: "PaperState", trades: "list[Trade
             contracts=tr.contracts, pnl_gross=tr.pnl_gross, fees=tr.fees,
             funding=tr.funding, pnl_net=tr.pnl_net, opened_ts=tr.opened_ts,
             closed_ts=tr.closed_ts, reason=tr.reason))
+    for ts, eq in equity_points:
+        stmt = sqlite_insert(PaperEquityRow).values(
+            run_key=run_key, ts=ts, equity=eq).on_conflict_do_nothing(
+            index_elements=["run_key", "ts"])
+        session.execute(stmt)
     _apply_state_to_row(session, state)
     session.commit()
 
@@ -150,3 +157,22 @@ def recent_trades(session, run_key: str, n: int) -> list[Trade]:
                   pnl_gross=r.pnl_gross, fees=r.fees, funding=r.funding,
                   pnl_net=r.pnl_net, opened_ts=r.opened_ts, closed_ts=r.closed_ts,
                   reason=r.reason) for r in rows]
+
+
+def load_equity_curve(session, run_key: str) -> list[tuple[int, float]]:
+    """run_key의 equity 곡선을 ts 오름차순 [(ts, equity), ...]로. paper-report 입력."""
+    rows = session.execute(
+        select(PaperEquityRow).where(PaperEquityRow.run_key == run_key)
+        .order_by(PaperEquityRow.ts)).scalars().all()
+    return [(r.ts, r.equity) for r in rows]
+
+
+def read_halted(session, run_key: str) -> bool:
+    """DB의 halted를 신선하게 읽음(외부 프로세스 panic 반영). 행 없으면 False.
+
+    WHY expire_all: 도는 루프의 세션은 상태 행을 캐시하고 있어, 별도 프로세스(panic)가
+    커밋한 halted=True를 그냥 session.get으로는 못 본다. 캐시를 무효화해야 DB의 외부 변경을 본다.
+    """
+    session.expire_all()
+    row = session.get(PaperStateRow, run_key)
+    return bool(row.halted) if row is not None else False
