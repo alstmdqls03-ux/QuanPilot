@@ -10,7 +10,7 @@ from dataclasses import dataclass
 import pandas as pd
 
 from quantpilot.backtest.costs import funding_between
-from quantpilot.backtest.engine import build_trade, check_exits, close_fill, open_position
+from quantpilot.backtest.engine import _pnl, build_trade, check_exits, close_fill, open_position
 from quantpilot.paper import store
 from quantpilot.paper.store import PaperState
 from quantpilot.risk.circuit_breaker import is_new_utc_day, should_halt
@@ -192,6 +192,7 @@ def run_one_tick(ctx: TickContext, state: PaperState):
     lookback = ctx.strategy.lookback
     last = state.last_processed_bar_ts
     all_trades = []
+    equity_points: list[tuple[int, float]] = []
     for pos_iloc in range(len(df)):
         t = int(df.index[pos_iloc])
         if last is not None and t <= last:
@@ -199,18 +200,24 @@ def run_one_tick(ctx: TickContext, state: PaperState):
         if pos_iloc < lookback:
             # WHY 진행만 하고 process_bar 안 함: warmup window가 부족하면 지표 계산
             # 불가 → 신호 오류. 백테(run_backtest)와 동일하게 lookback개까지는 스킵.
-            state.last_processed_bar_ts = t
+            state.last_processed_bar_ts = t   # warmup: 진행만(곡선 기록 X)
             continue
         window = df.iloc[pos_iloc - lookback + 1: pos_iloc + 1]
         bar = {"ts": t, "open": float(df.at[t, "open"]), "high": float(df.at[t, "high"]),
                "low": float(df.at[t, "low"]), "close": float(df.at[t, "close"])}
         state, trades = process_bar(ctx, state, bar, window, funding_events)
         all_trades.extend(trades)
+        # equity 포인트 = 실현 + 미실현(그 봉 종가 기준). 백테 equity_curve와 동일 의미.
+        # WHY 미실현 포함: 보유 중 drawdown이 곡선에 반영돼야 MaxDD/Sharpe가 백테와 같은 잣대.
+        unreal = (_pnl(state.position.side, state.position.entry, bar["close"],
+                       state.position.contracts, ctx.ct_val)
+                  if state.position is not None else 0.0)
+        equity_points.append((t, state.equity + unreal))
 
-    # WHY persist_tick(단일 commit): 거래 행과 last_processed_bar_ts를 같은 트랜잭션에
+    # WHY persist_tick(단일 commit): 거래·equity·last_processed_bar_ts를 같은 트랜잭션에
     # 묶어야 틱 도중 강제 종료돼도 '거래는 적재됐는데 진행위치는 안 밀린' 불일치가 없다.
     # 불일치 상태로 재시작하면 같은 봉을 재처리해 거래가 중복 적재된다(append-only라 못 거름).
-    store.persist_tick(ctx.session, ctx.run_key, state, all_trades)
+    store.persist_tick(ctx.session, ctx.run_key, state, all_trades, equity_points)
     return state, all_trades
 
 
