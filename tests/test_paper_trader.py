@@ -421,6 +421,42 @@ def test_process_bar_short_stop_closes_and_realizes():
 
 # ─── 열린 포지션 재시작 (restart-with-open-position) test ───────────────────
 
+def test_run_one_tick_skips_persist_when_panic_halted(session):
+    """run_one_tick은 panic_halted가 DB에 세팅돼 있으면 persist_tick을 건너뛰어야(Bug 1 회귀 가드).
+
+    시나리오: panic이 이 틱 도중에 걸렸을 때 루프가 stale in-memory 상태를 DB에 쓰면
+    panic이 청산한 포지션·정지 플래그를 덮어쓴다. persist 직전에 panic_halted를 재확인해
+    stale 상태를 쓰지 않고 DB 상태(panic이 기록한 값)를 반환해야 함.
+
+    WHY save_state 먼저: set_panic_halted는 행이 있어야 동작(row is not None 조건).
+    panic CLI도 기존 런에 대해서만 호출 가능(paper 시작 후에야 행이 생긴다).
+    """
+    from quantpilot.paper.store import (
+        PaperState, load_state, make_run_key, read_panic_halted, save_state,
+        set_panic_halted)
+    from quantpilot.paper.trader import TickContext, run_one_tick
+    tf = 3_600_000
+    base = 1_700_000_000_000
+    rows = [(base + i * tf, 100.0, 101.0, 99.0, 100.0) for i in range(3)]
+    _seed_candles(session, "BTC-USDT-SWAP", "1h", rows)
+    rk = make_run_key("BTC-USDT-SWAP", "1h", "t-hold")
+    ctx = TickContext(session=session, client=None, symbol="BTC-USDT-SWAP",
+                      timeframe="1h", strategy=_HoldStrategy(), capital=1000.0,
+                      leverage=3, ct_val=0.01, lot_sz=1.0, run_key=rk)
+    st = PaperState(run_key=rk, symbol="BTC-USDT-SWAP", timeframe="1h",
+                    strategy="t-hold", equity=1000.0, day_start_equity=1000.0,
+                    day_start_ts=0)
+    # 행이 먼저 있어야 set_panic_halted가 동작(실제로도 panic CLI는 paper 시작 후 호출)
+    save_state(session, st)
+    # panic 프로세스가 panic_halted를 세팅(틱 도중에 걸린 상황 시뮬)
+    set_panic_halted(session, rk, True)
+    st2, trades = run_one_tick(ctx, st)
+    # panic_halted가 세팅됐으므로 거래는 없고 persist를 건너뜀
+    assert trades == [], "panic_halted 상태에서 거래가 발생해선 안 됨"
+    # DB 상태(panic_halted=True)가 여전히 True여야 — 루프가 덮어쓰지 않음
+    assert read_panic_halted(session, rk) is True, "루프 persist가 panic_halted를 덮어써선 안 됨"
+
+
 def test_restart_with_open_position_then_stop(session):
     """열린 포지션이 DB에 있는 상태에서 재시작한 뒤 손절 봉을 처리하는 경로 검증.
 

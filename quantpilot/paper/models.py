@@ -21,6 +21,7 @@ class PaperStateRow(Base):
     day_start_ts = Column(BigInteger, nullable=False)  # 오늘 UTC 경계
     daily_realized_pnl = Column(Float, nullable=False, default=0.0)
     halted = Column(Boolean, nullable=False, default=False)  # panic/서킷 정지
+    panic_halted = Column(Boolean, nullable=False, default=False)  # 수동 panic 정지(서킷 halted와 분리)
     last_processed_bar_ts = Column(BigInteger, nullable=True)  # 중복방지·재개 지점
     # 포지션(열려 있을 때만 non-NULL). WHY 인라인: 한 번에 1개라 별 테이블 불필요.
     pos_side = Column(String, nullable=True)

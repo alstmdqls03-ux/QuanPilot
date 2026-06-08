@@ -287,7 +287,7 @@ def paper_status(symbol, timeframe, strategy):
 def panic(symbol, timeframe, strategy):
     """비상정지: 보유 포지션 즉시 청산(최신 봉 종가) + 정지 플래그."""
     from quantpilot.backtest.data_loader import load_candles_df
-    from quantpilot.paper.store import load_state, make_run_key, persist_tick
+    from quantpilot.paper.store import load_state, make_run_key, persist_tick, set_panic_halted
     from quantpilot.paper.models import PaperStateRow
     from quantpilot.paper.trader import TickContext, panic_close
 
@@ -315,6 +315,7 @@ def panic(symbol, timeframe, strategy):
     # 사이에 크래시 시 거래는 기록됐는데 state.halted=False, position 미청산으로 남는
     # 불일치 발생. persist_tick은 거래 행과 상태를 같은 commit에 묶어 원자성 보장.
     persist_tick(session, rk, st, [trade] if trade is not None else [])
+    set_panic_halted(session, rk, True)
     if trade is None:
         click.echo(f"정지 플래그 set. 청산할 포지션 없음. (equity {st.equity:.2f})")
     else:

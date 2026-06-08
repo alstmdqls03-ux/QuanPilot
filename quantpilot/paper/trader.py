@@ -130,6 +130,7 @@ def panic_close(ctx: TickContext, state: PaperState, last_price: float,
     신규 진입을 차단한다. 청산 실패(예외)가 발생해도 halt 상태는 유지돼야 함.
     """
     state.halted = True
+    state.panic_halted = True
     if state.position is None:
         return None
     fill = close_fill(state.position, last_price, state.position.contracts, last_ts,
@@ -214,6 +215,14 @@ def run_one_tick(ctx: TickContext, state: PaperState):
                   if state.position is not None else 0.0)
         equity_points.append((t, state.equity + unreal))
 
+    # panic이 이 틱 도중에 걸렸으면(외부 프로세스) 우리 stale 상태를 persist하지 않는다.
+    # 그대로 쓰면 panic이 청산한 포지션·정지를 덮어써 버린다(Bug 1). 롤백 후 DB 상태로 재로드.
+    if store.read_panic_halted(ctx.session, ctx.run_key):
+        ctx.session.rollback()
+        return store.load_state(ctx.session, ctx.run_key, symbol=ctx.symbol,
+                                timeframe=ctx.timeframe, strategy=state.strategy,
+                                capital=state.day_start_equity,
+                                day_start_ts=state.day_start_ts), []
     # WHY persist_tick(단일 commit): 거래·equity·last_processed_bar_ts를 같은 트랜잭션에
     # 묶어야 틱 도중 강제 종료돼도 '거래는 적재됐는데 진행위치는 안 밀린' 불일치가 없다.
     # 불일치 상태로 재시작하면 같은 봉을 재처리해 거래가 중복 적재된다(append-only라 못 거름).
@@ -235,9 +244,10 @@ def run_loop(ctx: TickContext, state: PaperState):
     log.info("페이퍼 루프 시작: %s equity=%.2f poll=%ds", ctx.run_key, state.equity,
              ctx.poll_seconds)
     while True:
-        # (1) 외부 panic 킬스위치: DB는 halted인데 in-memory는 아직 아님 → panic 발생
-        if store.read_halted(ctx.session, ctx.run_key) and not state.halted:
-            log.warning("외부 panic 감지 — 상태 재로드 후 정지")
+        # panic 킬스위치: panic_halted는 서킷 halted와 무관(서킷 정지 중에도 panic이 루프를 멈춤),
+        # UTC 리셋에도 안 풀림(sticky). 루프는 이 플래그를 절대 쓰지 않으므로 panic이 못 덮어써짐.
+        if store.read_panic_halted(ctx.session, ctx.run_key):
+            log.warning("panic 감지 — 상태 재로드 후 정지")
             state = store.load_state(ctx.session, ctx.run_key, symbol=ctx.symbol,
                                      timeframe=ctx.timeframe, strategy=state.strategy,
                                      capital=state.equity, day_start_ts=state.day_start_ts)

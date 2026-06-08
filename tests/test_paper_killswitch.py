@@ -1,6 +1,6 @@
 from quantpilot.data.db import init_db, make_engine, make_session_factory
 from quantpilot.paper.store import (
-    PaperState, make_run_key, read_halted, save_state)
+    PaperState, make_run_key, persist_tick, read_halted, save_state)
 
 
 def _file_sessions(tmp_path):
@@ -28,6 +28,41 @@ def test_read_halted_sees_external_commit(tmp_path):
 
 def test_read_halted_missing_row_is_false(session):
     assert read_halted(session, make_run_key("X", "1h", "rsi-mr")) is False
+
+
+def test_panic_halted_round_trip_and_loop_not_clobber(tmp_path):
+    # set_panic_halted는 별 세션 커밋, read_panic_halted가 봄. persist_tick(루프)은 panic_halted를 안 건드림.
+    from quantpilot.paper.store import (
+        PaperState, make_run_key, persist_tick, read_panic_halted, save_state,
+        set_panic_halted)
+    s1, s2 = _file_sessions(tmp_path)
+    rk = make_run_key("BTC-USDT-SWAP", "1h", "rsi-mr")
+    st = PaperState(run_key=rk, symbol="BTC-USDT-SWAP", timeframe="1h",
+                    strategy="rsi-mr", equity=1000.0, day_start_equity=1000.0,
+                    day_start_ts=0)
+    save_state(s1, st)
+    assert read_panic_halted(s1, rk) is False
+    # s2(panic 프로세스)가 panic_halted 설정
+    set_panic_halted(s2, rk, True)
+    assert read_panic_halted(s1, rk) is True
+    # s1(루프)이 persist_tick으로 상태를 써도 panic_halted는 True로 남아야 함(루프가 안 덮어씀)
+    st.panic_halted = False           # 루프 in-memory는 panic을 모름
+    persist_tick(s1, rk, st, [], equity_points=[(100, 1000.0)])
+    assert read_panic_halted(s1, rk) is True   # 여전히 True (안 덮어써짐)
+
+
+def test_panic_halted_independent_of_circuit_halt(tmp_path):
+    # 서킷 halted=True여도 panic_halted를 별도로 읽을 수 있어야(Bug 2 회귀 가드)
+    from quantpilot.paper.store import (
+        PaperState, make_run_key, read_panic_halted, save_state, set_panic_halted)
+    s1, _ = _file_sessions(tmp_path)
+    rk = make_run_key("BTC-USDT-SWAP", "1h", "rsi-mr")
+    st = PaperState(run_key=rk, symbol="BTC-USDT-SWAP", timeframe="1h",
+                    strategy="rsi-mr", equity=1000.0, day_start_equity=1000.0,
+                    day_start_ts=0, halted=True)   # 서킷 정지 상태
+    save_state(s1, st)
+    set_panic_halted(s1, rk, True)
+    assert read_panic_halted(s1, rk) is True   # 서킷 halted와 무관하게 panic 감지됨
 
 
 def test_setup_paper_logger_writes_to_file(tmp_path):

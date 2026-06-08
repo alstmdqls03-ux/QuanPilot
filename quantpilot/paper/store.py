@@ -26,6 +26,7 @@ class PaperState:
     day_start_ts: int
     daily_realized_pnl: float = 0.0
     halted: bool = False
+    panic_halted: bool = False
     last_processed_bar_ts: int | None = None
     position: Position | None = None
     open_fee: float = 0.0                 # 보유 포지션 진입 수수료(Trade 집계용)
@@ -62,6 +63,7 @@ def load_state(session, run_key: str, *, symbol: str, timeframe: str,
         strategy=row.strategy, equity=row.equity,
         day_start_equity=row.day_start_equity, day_start_ts=row.day_start_ts,
         daily_realized_pnl=row.daily_realized_pnl, halted=row.halted,
+        panic_halted=bool(row.panic_halted),
         last_processed_bar_ts=row.last_processed_bar_ts,
         position=position, open_fee=open_fee, pending_fills=pending)
 
@@ -84,6 +86,7 @@ def _apply_state_to_row(session, state: "PaperState") -> None:
     row.day_start_ts = state.day_start_ts
     row.daily_realized_pnl = state.daily_realized_pnl
     row.halted = state.halted
+    # WHY panic_halted 미기록: 루프가 panic 플래그를 덮어쓰면 안 됨. set_panic_halted(panic 전용)만 기록.
     row.last_processed_bar_ts = state.last_processed_bar_ts
     p = state.position
     if p is None:
@@ -176,3 +179,25 @@ def read_halted(session, run_key: str) -> bool:
     session.expire_all()
     row = session.get(PaperStateRow, run_key)
     return bool(row.halted) if row is not None else False
+
+
+def set_panic_halted(session, run_key: str, value: bool = True) -> None:
+    """panic 전용 플래그 기록(루프는 절대 안 건드림). panic CLI가 호출.
+
+    WHY 전용 writer: 루프의 persist_tick은 panic_halted를 안 쓰므로 panic이 직접 기록해야 한다.
+    이 분리 덕에 루프가 도중에 persist해도 panic 정지를 덮어쓰지 못한다(Bug 1).
+    """
+    row = session.get(PaperStateRow, run_key)
+    if row is not None:
+        row.panic_halted = value
+        session.commit()
+
+
+def read_panic_halted(session, run_key: str) -> bool:
+    """DB의 panic_halted를 신선하게 읽음(외부 panic 반영). 행 없으면 False.
+
+    WHY expire_all: read_halted와 동일 — 루프의 캐시된 행은 별 프로세스 커밋을 안 본다.
+    """
+    session.expire_all()
+    row = session.get(PaperStateRow, run_key)
+    return bool(row.panic_halted) if row is not None else False
