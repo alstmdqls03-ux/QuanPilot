@@ -3,13 +3,13 @@
 """
 from __future__ import annotations
 
-import sys
 import time
 from dataclasses import dataclass
 
 import pandas as pd
 
 from quantpilot.backtest.costs import funding_between
+from quantpilot.paper.logsetup import setup_paper_logger
 from quantpilot.backtest.engine import _pnl, build_trade, check_exits, close_fill, open_position
 from quantpilot.paper import store
 from quantpilot.paper.store import PaperState
@@ -222,27 +222,40 @@ def run_one_tick(ctx: TickContext, state: PaperState):
 
 
 def run_loop(ctx: TickContext, state: PaperState):
-    """무한 루프(얇은 래퍼). 폴링 실패는 흡수하고 다음 틱에서 재시도 → 루프 생존.
+    """무한 루프. (1) 매 틱 외부 panic(DB halted) 감지 시 정지, (2) 폴링 실패 흡수+상태 재로드,
+    (3) 회전 파일 로그.
 
-    WHY 오류 흡수: 네트워크 순단이나 일시적 OKX API 오류로 루프가 죽으면 안 됨.
-    에러 로그만 남기고 다음 poll_seconds 뒤에 재시도. 심각한 계정 오류(권한 등)는
-    kill switch(panic_close)나 운영자 개입으로 처리 — 여기서 판별하지 않음.
+    WHY 외부 halt 체크: panic은 별도 프로세스로 SQLite만 갱신한다. 도는 루프는 in-memory
+    state를 들고 있어 그 변경을 자동으로 못 본다 → 매 틱 DB halted를 재확인해야 킬스위치가
+    *도는 루프*를 실제로 멈춘다(Week 3 /review 발견).
+    WHY 오류 흡수+재로드: 네트워크 순단 등으로 한 틱이 실패하면 in-memory state가 더럽혀졌을 수
+    있음(미커밋). rollback + load_state로 마지막 커밋 상태로 되돌려 다음 틱이 깨끗하게 재처리.
     """
+    log = setup_paper_logger(ctx.run_key)
+    log.info("페이퍼 루프 시작: %s equity=%.2f poll=%ds", ctx.run_key, state.equity,
+             ctx.poll_seconds)
     while True:
+        # (1) 외부 panic 킬스위치: DB는 halted인데 in-memory는 아직 아님 → panic 발생
+        if store.read_halted(ctx.session, ctx.run_key) and not state.halted:
+            log.warning("외부 panic 감지 — 상태 재로드 후 정지")
+            state = store.load_state(ctx.session, ctx.run_key, symbol=ctx.symbol,
+                                     timeframe=ctx.timeframe, strategy=state.strategy,
+                                     capital=state.equity, day_start_ts=state.day_start_ts)
+            break
         try:
-            state, _ = run_one_tick(ctx, state)
+            state, trades = run_one_tick(ctx, state)
+            for tr in trades:
+                log.info("청산: %s %dct %.2f->%.2f net %+.2f [%s]", tr.side, tr.contracts,
+                         tr.entry, tr.exit, tr.pnl_net, tr.reason)
         except Exception as e:  # noqa: BLE001  운영 중 단발 오류로 죽지 않게
-            print(f"[paper] tick 오류(건너뜀, 상태 재로드): {e}", file=sys.stderr)
+            log.warning("tick 오류(건너뜀, 상태 재로드): %s", e)
             try:
                 ctx.session.rollback()
             except Exception:  # noqa: BLE001
                 pass
-            # WHY 재로드: 실패한 틱에서 in-memory state가 더럽혀졌을 수 있음(equity·진행위치
-            # 전진, DB 미커밋). persist_tick은 틱 끝에서만 commit하므로 예외 발생 시 DB는
-            # 이전 커밋 상태 그대로. 마지막 커밋 상태로 되돌려 다음 틱이 깨끗한 상태에서
-            # 재처리 → 중복/유실 방지.
             state = store.load_state(ctx.session, ctx.run_key, symbol=ctx.symbol,
                                      timeframe=ctx.timeframe, strategy=state.strategy,
                                      capital=state.day_start_equity,
                                      day_start_ts=state.day_start_ts)
         time.sleep(ctx.poll_seconds)
+    log.info("페이퍼 루프 정지.")

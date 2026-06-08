@@ -28,3 +28,15 @@ def test_read_halted_sees_external_commit(tmp_path):
 
 def test_read_halted_missing_row_is_false(session):
     assert read_halted(session, make_run_key("X", "1h", "rsi-mr")) is False
+
+
+def test_setup_paper_logger_writes_to_file(tmp_path):
+    from quantpilot.paper.logsetup import setup_paper_logger
+    log_dir = tmp_path / "logs"
+    logger = setup_paper_logger("BTC-USDT-SWAP|1h|rsi-mr", log_dir=str(log_dir))
+    logger.info("hello-qa-line")
+    for h in logger.handlers:
+        h.flush()
+    files = list(log_dir.glob("paper-*.log"))
+    assert files, "로그 파일이 생성돼야 함"
+    assert "hello-qa-line" in files[0].read_text()
