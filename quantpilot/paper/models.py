@@ -3,7 +3,7 @@
 설계: data/models.py와 동일 규약 — ts는 int ms epoch UTC, FK 없음(run_key 문자열 연결).
 포지션은 한 번에 1개라 paper_state 행에 인라인(정규화 X → 복구가 원자적).
 """
-from sqlalchemy import BigInteger, Boolean, Column, Float, Integer, String
+from sqlalchemy import BigInteger, Boolean, Column, Float, Integer, String, UniqueConstraint
 
 from quantpilot.data.db import Base
 
@@ -32,6 +32,22 @@ class PaperStateRow(Base):
     pos_opened_ts = Column(BigInteger, nullable=True)
     pos_open_fee = Column(Float, nullable=True)            # 진입 수수료(Trade 집계용)
     pos_pending_fills = Column(String, nullable=True)      # JSON fills(분할익절 누적)
+
+
+class PaperEquityRow(Base):
+    """봉별 equity 포인트(실현+미실현). paper-report가 Sharpe/MaxDD 계산에 사용.
+
+    WHY UNIQUE(run_key, ts): 틱 재처리(재시작/오류 복구) 시 같은 봉 equity가 중복 적재되면
+    곡선이 왜곡된다. (run_key, ts) 유니크 + on_conflict_do_nothing으로 idempotent(Week 1 캔들 패턴).
+    """
+    __tablename__ = "paper_equity"
+
+    id = Column(Integer, primary_key=True)
+    run_key = Column(String, nullable=False)
+    ts = Column(BigInteger, nullable=False)        # 봉 ts (ms epoch UTC)
+    equity = Column(Float, nullable=False)         # 실현 + 미실현(그 봉 종가 기준)
+
+    __table_args__ = (UniqueConstraint("run_key", "ts"),)
 
 
 class PaperTradeRow(Base):
