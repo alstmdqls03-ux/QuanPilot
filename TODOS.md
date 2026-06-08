@@ -78,13 +78,10 @@ Week 3는 $0 페이퍼라 아래는 의도적 단순화로 남겨둠. 실거래 
   등록된 항목이 페이퍼에도 그대로 적용됨(위 candle finality 항목 참조).
 - [x] **[Week 4 완료] panic이 *돌고 있는* 루프를 멈춤** — `run_loop`이 매 틱 `read_halted`
   (expire로 외부 커밋 감지)로 외부 panic을 감지해 상태 재로드 후 정지. 기본 케이스 해결.
-- [ ] **[Week 5] `panic_halted` 별도 플래그 분리 (두 엣지 해결)** — 현재 `halted` 하나로
-  서킷·panic을 겸하다 보니: (a) **UTC 자정에 panic 정지가 풀림**(`process_bar` 0단계가
-  `halted=False` 리셋 — 서킷용인데 panic도 해제), (b) **서킷 정지 후 같은 날 panic은 루프를 못 멈춤**
-  (`read_halted() and not state.halted`에서 이미 in-memory halted=True라 break 조건 불성립;
-  UTC 자정까지 < 24h 갇힘, 신규 진입은 없어 금융 리스크 X, Ctrl-C로 수동 정지 가능). 둘 다
-  `panic_halted`를 별도 컬럼으로 분리하면 깔끔히 해결(panic은 수동 해제 전까지 sticky, 루프는
-  panic_halted면 무조건 종료, UTC 리셋은 서킷 halt만 클리어). (Week 3+4 final review)
+- [x] **[Week 4 완료] `panic_halted` 별도 플래그 분리** — `halted`(서킷)와 분리된 `panic_halted`
+  컬럼 + 전용 `set_panic_halted`/`read_panic_halted`. 루프의 `_apply_state_to_row`는 panic_halted를
+  안 건드림(틱 도중 panic을 덮어쓰는 race 차단), `run_loop`은 `read_panic_halted`로 정지(서킷
+  정지 중에도, UTC 리셋에도 sticky), `run_one_tick`은 persist 직전 재확인. (Week 4 /review 크로스모델)
 - [ ] **[Week 4] 영속 JSON 역직렬화 방어** — `load_state`가 `pos_pending_fills`/`pos_targets_remaining`
   을 검증 없이 `Fill(**f)`/`tuple(t)`로 푼다. 스키마가 진화(필드 추가)하거나 행이 손상되면
   startup에서 예외로 죽음. 컬럼명·run_key를 담은 명확한 에러로 감싸고 형태 검증 추가. (Codex+Claude)
@@ -100,6 +97,17 @@ Week 3는 $0 페이퍼라 아래는 의도적 단순화로 남겨둠. 실거래 
 - [ ] **[Week 5] `logsetup.py` 상대 `logs/` 경로** — 프로세스를 루트가 아닌 곳에서 띄우면 로그가
   예상 밖 위치에 쌓임. 패키지 루트 기준 절대경로 또는 설정 가능 경로로. + `panic` CLI를
   CliRunner로 e2e 스모크 테스트(현재 read_halted/save_state 직접 테스트만 있음). (W4 final review)
+- [ ] **[Week 5] SQLite WAL + busy_timeout** — `make_engine`이 WAL/타임아웃 미설정. 도는 루프의
+  큰 catch-up commit 중 동시 `panic` 쓰기가 `database is locked`로 실패할 수 있고 panic CLI엔
+  재시도가 없음(정지 미반영). WAL + `connect_args timeout`으로 동시성 개선. (W4 /review Codex)
+- [ ] **[Week 5] paper-report가 panic 청산을 곡선에 미반영** — `panic`은 봉이 아니라 곡선에
+  equity 포인트를 안 남긴다. paper-report total_return은 곡선 마지막(봉) 기준이라 panic 청산
+  손익(거래 로그엔 있음)이 빠질 수 있음. panic 시 마지막 equity 포인트도 기록하거나 report가
+  state.equity를 함께 표시. (W4 /review Codex)
+- [ ] **[Week 5] live-from-now 시작 옵션** — 첫 런(`last_processed_bar_ts=None`)은 적재된 과거 봉을
+  전부 replay한다. `run-paper.sh`는 일단 warmup 3일만 시드해 완화했지만, 진짜 "지금부터 라이브"
+  7일 측정을 위해 첫 런에서 과거 replay 없이 최신 봉부터 시작하는 옵션(`--from-now`: 시작 시
+  `last_processed_bar_ts`를 최신 봉으로 설정, warmup 윈도우는 지표 계산에만 사용). (W4 /review Codex)
 
 (완료: 분할익절·숏 parity 케이스 추가됨 — `test_paper_matches_backtest_partial_tp`/`_short`.
  진입 수수료 daily 서킷 반영·sticky halt·panic 원자성·루프 예외 재로드는 /review에서 수정 머지.)
