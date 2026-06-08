@@ -76,21 +76,30 @@ Week 3는 $0 페이퍼라 아래는 의도적 단순화로 남겨둠. 실거래 
 - [ ] **[pre-live] 봉 마감 정밀도(confirm 필드)** — 페이퍼 루프는 Week 1 `drop_unclosed`
   (벽시계 기준)에 의존. 로컬 시계가 OKX보다 밀리면 1봉 지연. 이미 Week 1 pre-live blocker로
   등록된 항목이 페이퍼에도 그대로 적용됨(위 candle finality 항목 참조).
-- [ ] **[Week 4] panic 정지가 UTC 자정에 풀림** — `process_bar` 0단계가 새 UTC 날에
-  `halted=False`로 리셋하는데, 이게 서킷브레이커 정지뿐 아니라 **수동 panic 정지도 해제**한다.
-  23:55에 panic 쳐도 다음날 00:01에 루프가 재가동됨(킬스위치 멘탈모델 위반). `panic_halted`를
-  별도 플래그로 분리하거나 수동 해제 전까지 유지하도록 보완. (Week 3 final review)
-- [ ] **[Week 4] panic이 *이미 돌고 있는* 루프를 멈추지 못함** — `run_loop`는 in-memory `state`를
-  들고 돌고, `quantpilot panic`은 별도 프로세스로 SQLite만 갱신한다. 루프는 매 틱 그 행을
-  다시 읽지 않으므로 panic의 청산·halt가 루프의 다음 `persist_tick`에 덮어써질 수 있다. 지금은
-  "루프를 먼저 Ctrl-C로 멈추고 panic으로 청산"이 안전한 사용법. 실거래 전 루프가 매 틱 halt
-  플래그(또는 시그널 파일)를 재확인하도록 보완. (Week 3 /review 크로스모델: Codex+Claude)
+- [x] **[Week 4 완료] panic이 *돌고 있는* 루프를 멈춤** — `run_loop`이 매 틱 `read_halted`
+  (expire로 외부 커밋 감지)로 외부 panic을 감지해 상태 재로드 후 정지. 기본 케이스 해결.
+- [ ] **[Week 5] `panic_halted` 별도 플래그 분리 (두 엣지 해결)** — 현재 `halted` 하나로
+  서킷·panic을 겸하다 보니: (a) **UTC 자정에 panic 정지가 풀림**(`process_bar` 0단계가
+  `halted=False` 리셋 — 서킷용인데 panic도 해제), (b) **서킷 정지 후 같은 날 panic은 루프를 못 멈춤**
+  (`read_halted() and not state.halted`에서 이미 in-memory halted=True라 break 조건 불성립;
+  UTC 자정까지 < 24h 갇힘, 신규 진입은 없어 금융 리스크 X, Ctrl-C로 수동 정지 가능). 둘 다
+  `panic_halted`를 별도 컬럼으로 분리하면 깔끔히 해결(panic은 수동 해제 전까지 sticky, 루프는
+  panic_halted면 무조건 종료, UTC 리셋은 서킷 halt만 클리어). (Week 3+4 final review)
 - [ ] **[Week 4] 영속 JSON 역직렬화 방어** — `load_state`가 `pos_pending_fills`/`pos_targets_remaining`
   을 검증 없이 `Fill(**f)`/`tuple(t)`로 푼다. 스키마가 진화(필드 추가)하거나 행이 손상되면
   startup에서 예외로 죽음. 컬럼명·run_key를 담은 명확한 에러로 감싸고 형태 검증 추가. (Codex+Claude)
 - [ ] **[Week 4] 틱마다 전체 캔들/펀딩 스캔** — `run_one_tick`이 매 틱 `load_candles_df`(전체)
   + 전체 `FundingRate` 조회. 7일 런에서 누적 낭비(기능 버그 아님). lookback 윈도우만 로드
   + 포지션 보유 구간만 funding 조회로 최적화. `paper_trades`에 `(run_key, closed_ts)` 인덱스도 검토. (Claude perf)
+- [ ] **[Week 5] `paper_trades` UNIQUE 제약 부재** — 원자적 `persist_tick`으로 정상 흐름엔
+  중복이 없지만 DB 레벨 가드가 없다. 향후 리팩터가 커밋을 쪼개거나 `append_trade`를 따로 쓰면
+  중복 거래가 조용히 쌓일 수 있음. `UNIQUE(run_key, opened_ts, closed_ts, reason)` 추가 검토. (W4 final review)
+- [ ] **[Week 5] collect 실패가 조용히 삼켜짐** — `run_one_tick`의 `collect_ohlcv` 실패를
+  `run_loop`이 로그만 남기고 흡수. 7일 런이 며칠 연속 봉을 못 받아도 조용히 드리프트 가능.
+  실거래 전 N틱 연속 실패 시 log.error/알림. ($0 페이퍼엔 영향 작음.) (W4 final review)
+- [ ] **[Week 5] `logsetup.py` 상대 `logs/` 경로** — 프로세스를 루트가 아닌 곳에서 띄우면 로그가
+  예상 밖 위치에 쌓임. 패키지 루트 기준 절대경로 또는 설정 가능 경로로. + `panic` CLI를
+  CliRunner로 e2e 스모크 테스트(현재 read_halted/save_state 직접 테스트만 있음). (W4 final review)
 
 (완료: 분할익절·숏 parity 케이스 추가됨 — `test_paper_matches_backtest_partial_tp`/`_short`.
  진입 수수료 daily 서킷 반영·sticky halt·panic 원자성·루프 예외 재로드는 /review에서 수정 머지.)
