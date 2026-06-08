@@ -114,3 +114,36 @@ def test_process_bar_funding_deducted_on_close():
     bar = {"ts": ts, "open": 100.0, "high": 96.0, "low": 89.0, "close": 90.0}
     st, trades = process_bar(ctx, st, bar, window, funding_events=fund)
     assert trades and trades[0].funding != 0.0
+
+
+def test_circuit_breaker_blocks_entry():
+    from quantpilot.paper.trader import process_bar
+    ctx = _ctx(_LongOnceStrategy())
+    st = _state()
+    st.daily_realized_pnl = -60.0          # 시작자본 1000의 -6% → 정지 조건
+    ts = 1_700_007_200_000
+    window = _window([100.0, 100.0], ts)
+    bar = {"ts": ts, "open": 100.0, "high": 100.0, "low": 100.0, "close": 100.0}
+    st, trades = process_bar(ctx, st, bar, window)
+    assert st.position is None              # 진입 차단됨
+    assert st.halted is True
+    assert trades == []
+
+
+def test_utc_rollover_resets_and_allows_entry():
+    from quantpilot.paper.trader import process_bar
+    DAY = 86_400_000
+    ctx = _ctx(_LongOnceStrategy())
+    st = _state()
+    st.daily_realized_pnl = -60.0
+    st.halted = True
+    prev = 1_700_000_000_000
+    st.last_processed_bar_ts = prev
+    ts = (prev // DAY + 1) * DAY            # 다음 UTC 자정 → 리셋
+    window = _window([100.0, 100.0], ts)
+    bar = {"ts": ts, "open": 100.0, "high": 100.0, "low": 100.0, "close": 100.0}
+    st, trades = process_bar(ctx, st, bar, window)
+    assert st.daily_realized_pnl >= -1e-9 or st.position is not None
+    assert st.halted is False
+    assert st.day_start_equity == st.equity + st.open_fee or st.position is not None
+    assert st.position is not None         # 리셋 후 진입 가능
