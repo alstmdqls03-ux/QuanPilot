@@ -346,5 +346,34 @@ def paper_logs(symbol, timeframe, strategy, limit):
         )
 
 
+@cli.command(name="paper-report")
+@click.option("--symbol", default="BTC-USDT-SWAP", show_default=True)
+@click.option("--timeframe", default="1h", show_default=True)
+@click.option("--strategy", default="rsi-mr", show_default=True)
+def paper_report(symbol, timeframe, strategy):
+    """페이퍼 런 성과 지표(백테와 동일 지표) 출력."""
+    # WHY compute_metrics 재사용: 페이퍼와 백테를 동일한 수식으로 측정해야
+    # "페이퍼 Sharpe 1.2 → 백테 1.1과 유사" 처럼 직접 비교 가능. 별도 구현은 지표 불일치 위험.
+    from quantpilot.backtest.metrics import compute_metrics, periods_per_year
+    from quantpilot.paper.store import load_equity_curve, make_run_key, recent_trades
+
+    session, _ = _session()
+    rk = make_run_key(symbol, timeframe, strategy)
+    curve = load_equity_curve(session, rk)
+    if len(curve) < 2:
+        click.echo(f"{rk}: equity 곡선 부족(아직 런 안 했거나 결정 봉 < 2). "
+                   f"'quantpilot paper'로 런을 시작하세요.")
+        return
+    trades = recent_trades(session, rk, 1_000_000)
+    m = compute_metrics(curve, trades, periods_per_year(timeframe))
+    click.echo(f"{rk}  ({len(curve)}봉, {curve[0][0]}~{curve[-1][0]})")
+    click.echo(f"  total_return: {m['total_return']}")
+    click.echo(f"  sharpe:       {m['sharpe']}")
+    click.echo(f"  max_drawdown: {m['max_drawdown']}")
+    click.echo(f"  n_trades:     {m['n_trades']}  win_rate {m['win_rate']}  "
+               f"profit_factor {m['profit_factor']}")
+    click.echo(f"  equity(곡선 마지막): {curve[-1][1]:.2f}")
+
+
 if __name__ == "__main__":
     cli()

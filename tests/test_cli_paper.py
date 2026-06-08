@@ -21,3 +21,34 @@ def test_paper_logs_empty(monkeypatch, tmp_path):
     # paper-logs가 실제로 빈 거래 목록을 처리한 경로를 통과했음이 보장됨.
     assert "거래 없음" in r.output or "|" in r.output, (
         f"paper-logs 출력이 예상 메시지를 포함하지 않음: {r.output!r}")
+
+
+def test_paper_report_empty(monkeypatch, tmp_path):
+    from click.testing import CliRunner
+    from quantpilot.cli import cli
+    monkeypatch.setenv("QUANTPILOT_DB_PATH", str(tmp_path / "q.db"))
+    r = CliRunner().invoke(cli, ["paper-report"])
+    assert r.exit_code == 0
+    assert "곡선" in r.output or "런" in r.output
+
+
+def test_paper_report_with_curve(monkeypatch, tmp_path):
+    from click.testing import CliRunner
+    from quantpilot.cli import cli
+    from quantpilot.config import Settings
+    from quantpilot.data.db import init_db, make_engine, make_session_factory
+    from quantpilot.paper.store import PaperState, make_run_key, persist_tick
+    db = str(tmp_path / "q.db")
+    monkeypatch.setenv("QUANTPILOT_DB_PATH", db)
+    engine = make_engine(Settings().db_url)
+    init_db(engine)
+    s = make_session_factory(engine)()
+    rk = make_run_key("BTC-USDT-SWAP", "1h", "rsi-mr")
+    st = PaperState(run_key=rk, symbol="BTC-USDT-SWAP", timeframe="1h",
+                    strategy="rsi-mr", equity=1010.0, day_start_equity=1000.0,
+                    day_start_ts=0)
+    persist_tick(s, rk, st, [], equity_points=[(100, 1000.0), (200, 1010.0)])
+    s.close()
+    r = CliRunner().invoke(cli, ["paper-report"])
+    assert r.exit_code == 0
+    assert "sharpe" in r.output.lower() and "max_drawdown" in r.output.lower()
