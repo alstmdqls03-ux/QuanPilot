@@ -80,9 +80,20 @@ Week 3는 $0 페이퍼라 아래는 의도적 단순화로 남겨둠. 실거래 
   `halted=False`로 리셋하는데, 이게 서킷브레이커 정지뿐 아니라 **수동 panic 정지도 해제**한다.
   23:55에 panic 쳐도 다음날 00:01에 루프가 재가동됨(킬스위치 멘탈모델 위반). `panic_halted`를
   별도 플래그로 분리하거나 수동 해제 전까지 유지하도록 보완. (Week 3 final review)
-- [ ] **[Week 4] parity 테스트에 분할익절 경로 추가** — 현재 `test_paper_parity`는 진입→손절
-  (flat) 단일 경로만 검증. tp1 체결 후 stop(또는 exit_signal)로 닫히는 `pending_fills` 누적
-  경로가 가장 복잡한데 미검증. tp1→stop 봉 시퀀스로 두 번째 parity 케이스 추가. (Week 3 final review)
+- [ ] **[Week 4] panic이 *이미 돌고 있는* 루프를 멈추지 못함** — `run_loop`는 in-memory `state`를
+  들고 돌고, `quantpilot panic`은 별도 프로세스로 SQLite만 갱신한다. 루프는 매 틱 그 행을
+  다시 읽지 않으므로 panic의 청산·halt가 루프의 다음 `persist_tick`에 덮어써질 수 있다. 지금은
+  "루프를 먼저 Ctrl-C로 멈추고 panic으로 청산"이 안전한 사용법. 실거래 전 루프가 매 틱 halt
+  플래그(또는 시그널 파일)를 재확인하도록 보완. (Week 3 /review 크로스모델: Codex+Claude)
+- [ ] **[Week 4] 영속 JSON 역직렬화 방어** — `load_state`가 `pos_pending_fills`/`pos_targets_remaining`
+  을 검증 없이 `Fill(**f)`/`tuple(t)`로 푼다. 스키마가 진화(필드 추가)하거나 행이 손상되면
+  startup에서 예외로 죽음. 컬럼명·run_key를 담은 명확한 에러로 감싸고 형태 검증 추가. (Codex+Claude)
+- [ ] **[Week 4] 틱마다 전체 캔들/펀딩 스캔** — `run_one_tick`이 매 틱 `load_candles_df`(전체)
+  + 전체 `FundingRate` 조회. 7일 런에서 누적 낭비(기능 버그 아님). lookback 윈도우만 로드
+  + 포지션 보유 구간만 funding 조회로 최적화. `paper_trades`에 `(run_key, closed_ts)` 인덱스도 검토. (Claude perf)
+
+(완료: 분할익절·숏 parity 케이스 추가됨 — `test_paper_matches_backtest_partial_tp`/`_short`.
+ 진입 수수료 daily 서킷 반영·sticky halt·panic 원자성·루프 예외 재로드는 /review에서 수정 머지.)
 
 ## 유지보수 (cosmetic, 급하지 않음) — Week 1 테스트 린트 빚
 
