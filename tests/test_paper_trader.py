@@ -254,3 +254,92 @@ def test_run_one_tick_dedup_no_reprocess(session):
     last = st.last_processed_bar_ts
     st, trades2 = run_one_tick(ctx, st)   # 새 봉 없음
     assert st.last_processed_bar_ts == last and trades2 == []
+
+
+# ─── Bug 1: persisted halt flag must block entry even when daily PnL is OK ───
+
+def test_persisted_halt_blocks_entry_even_when_pnl_ok():
+    """Bug 1 회귀: state.halted=True인데 daily PnL이 괜찮으면 should_halt()는 False를 반환.
+    수정 전에는 should_halt() 결과만 보므로 진입이 열려버림.
+    수정 후에는 state.halted 플래그를 먼저 확인하므로 진입이 차단되어야 함.
+    WHY 같은 UTC 날 보장: last_processed_bar_ts를 bar ts보다 1시간 전으로 설정하면
+    is_new_utc_day()가 False → UTC 리셋 없이 halted 플래그가 유지됨.
+    """
+    from quantpilot.paper.trader import process_bar
+    ctx = _ctx(_LongOnceStrategy())
+    st = _state()
+    st.halted = True
+    st.daily_realized_pnl = 0.0          # PnL은 정상 → should_halt()는 False
+    # WHY 같은 UTC 날 내 timestamps 선택: is_new_utc_day가 False여야 step 0에서
+    # halted가 리셋되지 않음. 1_700_000_000_000(2023-11-14 22:13 UTC)와
+    # 1_700_000_000_000 + 3_600_000(+1h)은 모두 같은 UTC 날(19675번째 날).
+    DAY_MS = 86_400_000
+    # 하루 시작 기준으로 같은 날 내 두 시점 사용
+    day_start = 1_700_000_000_000 - (1_700_000_000_000 % DAY_MS)  # UTC 자정
+    ts = day_start + 7_200_000          # UTC 자정 + 2h (같은 날)
+    st.last_processed_bar_ts = day_start + 3_600_000  # UTC 자정 + 1h (같은 날, ts보다 1h 전)
+    window = _window([100.0, 100.0], ts)
+    bar = {"ts": ts, "open": 100.0, "high": 100.0, "low": 100.0, "close": 100.0}
+    st, trades = process_bar(ctx, st, bar, window)
+    assert st.position is None, "halted=True이면 daily PnL이 좋아도 진입 차단돼야 함"
+    assert st.halted is True
+    assert trades == []
+
+
+# ─── Bug 2: entry fee must count toward daily_realized_pnl ───
+
+def test_entry_fee_counts_toward_daily_pnl():
+    """Bug 2 회귀: 진입 수수료가 equity에서 차감되지만 daily_realized_pnl에는 반영 안 됨.
+    수정 전에는 daily_realized_pnl이 0 그대로.
+    수정 후에는 daily_realized_pnl < 0 (entry fee만큼 감소).
+    """
+    from quantpilot.paper.trader import process_bar
+    ctx = _ctx(_LongOnceStrategy())
+    st = _state()
+    # 초기 daily_realized_pnl은 0
+    assert st.daily_realized_pnl == 0.0
+    ts = 1_700_007_200_000
+    window = _window([100.0, 100.0], ts)
+    bar = {"ts": ts, "open": 100.0, "high": 100.0, "low": 100.0, "close": 100.0}
+    st, trades = process_bar(ctx, st, bar, window)
+    assert st.position is not None, "진입은 성공해야 함"
+    open_fee = st.open_fee
+    assert open_fee > 0, "진입 수수료가 0보다 커야 함"
+    # 진입 수수료가 daily_realized_pnl에 반영되어야 함 (음수)
+    assert st.daily_realized_pnl < 0, "진입 수수료는 일일 실현 PnL에서 차감돼야 함"
+    assert abs(st.daily_realized_pnl - (-open_fee)) < 1e-9, (
+        f"daily_realized_pnl({st.daily_realized_pnl}) != -open_fee({-open_fee})")
+
+
+# ─── Bug 4: load_state returns clean persisted values (reload contract) ───
+
+def test_load_state_returns_persisted_clean_values(session):
+    """Bug 4 회귀: run_loop 예외 후 in-memory state를 버리고 DB에서 재로드해야 함.
+    이 테스트는 load_state가 실제로 DB에 커밋된 마지막 상태를 반환하는 것을 검증.
+    순서: 1) clean state를 save_state로 커밋 → 2) in-memory state 더럽힘 → 3) load_state로
+    재로드 → 4) 재로드된 값이 커밋된 clean 값과 일치(dirty 값 아님)를 assert.
+    WHY 이 테스트로 충분: run_loop의 except 블록에서 load_state를 호출하는 코드가
+    올바르게 동작함을 간접 보증. 즉 롤백+재로드 패턴의 계약을 테스트.
+    """
+    from quantpilot.paper.store import PaperState, load_state, make_run_key, save_state
+    rk = make_run_key("BTC-USDT-SWAP", "1h", "t-hold")
+    clean_equity = 1000.0
+    clean_ts = 1_700_007_200_000
+    # 1) clean state를 DB에 저장
+    clean_st = PaperState(run_key=rk, symbol="BTC-USDT-SWAP", timeframe="1h",
+                          strategy="t-hold", equity=clean_equity,
+                          day_start_equity=clean_equity, day_start_ts=0,
+                          last_processed_bar_ts=clean_ts)
+    save_state(session, clean_st)
+    # 2) in-memory state를 더럽힘 (DB 커밋 없음)
+    dirty_st = clean_st  # 같은 객체를 직접 변조
+    dirty_st.equity = 99999.0
+    dirty_st.last_processed_bar_ts = clean_ts + 3_600_000  # 한 봉 더 전진
+    # 3) DB에서 재로드
+    reloaded = load_state(session, rk, symbol="BTC-USDT-SWAP", timeframe="1h",
+                          strategy="t-hold", capital=clean_equity, day_start_ts=0)
+    # 4) reloaded는 clean 값 (dirty 값 아님)
+    assert reloaded.equity == clean_equity, (
+        f"재로드된 equity({reloaded.equity})가 dirty 값(99999)이 아닌 clean 값({clean_equity})이어야 함")
+    assert reloaded.last_processed_bar_ts == clean_ts, (
+        f"재로드된 ts({reloaded.last_processed_bar_ts})가 clean_ts({clean_ts})여야 함")

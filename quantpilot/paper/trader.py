@@ -78,10 +78,16 @@ def process_bar(ctx: TickContext, state: PaperState, bar: dict,
 
     # 3) 신호 처리
     if signal.side in ("long", "short") and state.position is None:
-        # WHY should_halt 체크: 하루 실현손익이 -5% 한도를 넘으면 신규 베팅 차단.
+        # WHY should_halt + state.halted 동시 체크:
+        #   ① should_halt: 하루 실현손익이 -5% 한도를 넘으면 신규 베팅 차단.
+        #   ② state.halted: panic_close 또는 이전 서킷 트립이 남긴 sticky 플래그.
+        #      panic 시점의 daily_realized_pnl이 정상 범위였더라도 halted=True이면
+        #      should_halt()는 False를 반환하므로, 플래그를 별도로 확인해야 함.
+        #      UTC 자정 롤오버(step 0)가 halted를 False로 초기화하므로 같은 UTC 날
+        #      내에서만 sticky — 다음 날 자동 해제.
         # 기존 포지션 손절/익절은 막지 않는다(사이징 불변식으로 이미 한정).
-        if should_halt(state.day_start_equity, state.daily_realized_pnl):
-            state.halted = True  # 서킷 차단: 신규 진입 안 함
+        if state.halted or should_halt(state.day_start_equity, state.daily_realized_pnl):
+            state.halted = True  # 정지 유지(서킷 또는 panic). UTC 리셋 전까지 신규 진입 차단
         else:
             pos, open_fee = open_position(
                 signal.side, bar, signal.suggested_stop, state.equity, ctx.ct_val,
@@ -90,6 +96,12 @@ def process_bar(ctx: TickContext, state: PaperState, bar: dict,
                 # WHY 진입 수수료 즉시 차감: 백테(run_backtest L164)와 동일. 수수료를
                 # 청산 시점으로 미루면 equity가 일시 과대 계상 → 사이징 불변식 위반 가능.
                 state.equity -= open_fee
+                # WHY daily_realized_pnl에도 반영: 진입 수수료는 즉각 실현된 비용이므로
+                # 일일 -5% 서킷 계산에 포함해야 함. 반영 안 하면 수수료 누적으로 실제
+                # 자본 손실이 5%를 초과해도 서킷이 울리지 않는 불변식 누수 발생.
+                # 또한 완전 청산 시 Trade.pnl_net = pnl_gross - (open_fee + close_fee) - funding
+                # 이므로 daily_realized_pnl의 trade 기여분이 pnl_net과 정확히 일치해야 함.
+                state.daily_realized_pnl -= open_fee
                 state.position = pos
                 state.open_fee = open_fee
             # WHY 무조건 리셋: 엔진(run_backtest L165)과 동일 구조. 신규 진입 신호 시점엔
@@ -213,5 +225,17 @@ def run_loop(ctx: TickContext, state: PaperState):
         try:
             state, _ = run_one_tick(ctx, state)
         except Exception as e:  # noqa: BLE001  운영 중 단발 오류로 죽지 않게
-            print(f"[paper] tick 오류(건너뜀): {e}", file=sys.stderr)
+            print(f"[paper] tick 오류(건너뜀, 상태 재로드): {e}", file=sys.stderr)
+            try:
+                ctx.session.rollback()
+            except Exception:  # noqa: BLE001
+                pass
+            # WHY 재로드: 실패한 틱에서 in-memory state가 더럽혀졌을 수 있음(equity·진행위치
+            # 전진, DB 미커밋). persist_tick은 틱 끝에서만 commit하므로 예외 발생 시 DB는
+            # 이전 커밋 상태 그대로. 마지막 커밋 상태로 되돌려 다음 틱이 깨끗한 상태에서
+            # 재처리 → 중복/유실 방지.
+            state = store.load_state(ctx.session, ctx.run_key, symbol=ctx.symbol,
+                                     timeframe=ctx.timeframe, strategy=state.strategy,
+                                     capital=state.day_start_equity,
+                                     day_start_ts=state.day_start_ts)
         time.sleep(ctx.poll_seconds)
