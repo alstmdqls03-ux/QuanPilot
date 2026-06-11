@@ -61,7 +61,8 @@ def process_bar(ctx: TickContext, state: PaperState, bar: dict,
     # 가짜 하락 → Sharpe/MaxDD 왜곡. 백테(run_backtest)와 동일 처리.
     if state.position is not None:
         pos2, fills = check_exits(state.position, bar, ctx.fee_bps,
-                                  ctx.slippage_bps, ctx.ct_val)
+                                  ctx.slippage_bps, ctx.ct_val,
+                                  be_trail_after_tp1=(getattr(ctx.strategy, "be_trail_after_tp1", False) if ctx.strategy else False))
         if fills:
             realized = sum(f.pnl_gross for f in fills) - sum(f.fee for f in fills)
             state.equity += realized

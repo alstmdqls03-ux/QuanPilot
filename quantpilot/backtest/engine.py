@@ -47,7 +47,7 @@ def build_trade(pos: Position, fills: list[Fill], last_ts: int,
 
 
 def check_exits(pos: Position, bar: dict, fee_bps: float, slippage_bps: float,
-                ct_val: float) -> tuple[Position | None, list[Fill]]:
+                ct_val: float, be_trail_after_tp1: bool = False) -> tuple[Position | None, list[Fill]]:
     """이 봉에서 손절/분할익절 체결 판정. (남은포지션 or None, fills) 반환.
 
     WHY '손절 먼저': 한 봉이 stop과 target을 동시에 건드리면 봉 내부 순서를 모름.
@@ -92,6 +92,11 @@ def check_exits(pos: Position, bar: dict, fee_bps: float, slippage_bps: float,
         return None, fills
     pos.contracts = contracts_left
     pos.targets_remaining = remaining
+    # WHY BE 트레일: BOT-SPEC §7.1 — 50% 익절(TP1) 후 손절을 본전으로 이동해
+    # '이긴 거래를 진 거래로 만들지 않는다'. 같은 봉에서는 손절 먼저 검사가 이미
+    # 끝났으므로 이동된 stop은 다음 봉부터 적용된다(보수 가정 유지).
+    if be_trail_after_tp1 and any(f.reason == "tp1" for f in fills):
+        pos.stop = pos.entry
     return pos, fills
 
 
@@ -140,7 +145,8 @@ def run_backtest(candles, strategy, capital, ct_val, lot_sz, leverage,
         #    WHY 즉시 실현: 부분익절 실현손익을 청산까지 미루면 그 봉에서 equity 곡선이
         #    가짜로 하락(체결분이 미실현에서 빠지는데 실현엔 안 더해짐) → Sharpe/MaxDD 왜곡.
         if position is not None:
-            position2, fills = check_exits(position, bar, fee_bps, slippage_bps, ct_val)
+            position2, fills = check_exits(position, bar, fee_bps, slippage_bps, ct_val,
+                                           be_trail_after_tp1=getattr(strategy, "be_trail_after_tp1", False))
             if fills:
                 equity += sum(f.pnl_gross for f in fills) - sum(f.fee for f in fills)
                 pending_fills.extend(fills)
