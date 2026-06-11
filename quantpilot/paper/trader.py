@@ -91,7 +91,8 @@ def process_bar(ctx: TickContext, state: PaperState, bar: dict,
         else:
             pos, open_fee = open_position(
                 signal.side, bar, signal.suggested_stop, state.equity, ctx.ct_val,
-                ctx.lot_sz, ctx.leverage, ctx.fee_bps, ctx.slippage_bps)
+                ctx.lot_sz, ctx.leverage, ctx.fee_bps, ctx.slippage_bps,
+                targets=signal.meta.get("targets"))
             if pos is not None:
                 # WHY 진입 수수료 즉시 차감: 백테(run_backtest L164)와 동일. 수수료를
                 # 청산 시점으로 미루면 equity가 일시 과대 계상 → 사이징 불변식 위반 가능.

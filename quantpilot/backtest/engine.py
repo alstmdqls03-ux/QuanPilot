@@ -96,7 +96,8 @@ def check_exits(pos: Position, bar: dict, fee_bps: float, slippage_bps: float,
 
 
 def open_position(side: str, bar: dict, stop: float, capital: float, ct_val: float,
-                  lot_sz: float, leverage: int, fee_bps: float, slippage_bps: float):
+                  lot_sz: float, leverage: int, fee_bps: float, slippage_bps: float,
+                  targets: list[tuple[float, float]] | None = None):
     """진입 시도. 사이징/청산가드 통과 시 Position 반환, 아니면 (None, 0fee)."""
     raw_entry = bar["close"]
     buy_side = "buy" if side == "long" else "sell"
@@ -109,7 +110,10 @@ def open_position(side: str, bar: dict, stop: float, capital: float, ct_val: flo
                                          slippage_bps=slippage_bps)
     except (StopBeyondLiquidationError, InsufficientCapitalError):
         return None, 0.0
-    targets = build_targets(entry, stop, side)
+    # WHY 주입 허용: confluence는 구조 기반 타깃(첫 매물대/피보)을 쓴다. None이면
+    # 기존 R-배수 사다리 그대로 → 기존 전략(rsi-mr) 거동 변화 0.
+    if targets is None:
+        targets = build_targets(entry, stop, side)
     pos = Position(side=side, entry=entry, contracts=sizing.contracts, stop=stop,
                    targets_remaining=targets, opened_ts=bar["ts"],
                    original_contracts=sizing.contracts)
@@ -159,7 +163,8 @@ def run_backtest(candles, strategy, capital, ct_val, lot_sz, leverage,
         if signal.side in ("long", "short") and position is None:
             position, open_fee = open_position(
                 signal.side, bar, signal.suggested_stop, equity, ct_val, lot_sz,
-                leverage, fee_bps, slippage_bps)
+                leverage, fee_bps, slippage_bps,
+                targets=signal.meta.get("targets"))
             if position is not None:
                 equity -= open_fee  # 진입 수수료 즉시 실현
             pending_fills = []
