@@ -286,42 +286,21 @@ def paper_status(symbol, timeframe, strategy):
 @click.option("--strategy", default="rsi-mr", show_default=True)
 def panic(symbol, timeframe, strategy):
     """비상정지: 보유 포지션 즉시 청산(최신 봉 종가) + 정지 플래그."""
-    from quantpilot.backtest.data_loader import load_candles_df
-    from quantpilot.paper.store import load_state, make_run_key, persist_tick, set_panic_halted
-    from quantpilot.paper.models import PaperStateRow
-    from quantpilot.paper.trader import TickContext, panic_close
+    # WHY ops.execute_panic 공유: 웹 대시보드 킬스위치와 동일 코드 경로여야
+    # 두 진입점의 안전장치 동작이 절대 갈라지지 않는다(원자성 포함).
+    from quantpilot.paper.ops import PanicError, execute_panic
 
     session, _ = _session()
-    rk = make_run_key(symbol, timeframe, strategy)
-    if session.get(PaperStateRow, rk) is None:
-        click.echo(f"{rk}: 페이퍼 상태 없음. 할 일 없음.")
+    try:
+        r = execute_panic(session, symbol, timeframe, strategy)
+    except PanicError as e:
+        click.echo(str(e))
         return
-    st = load_state(session, rk, symbol=symbol, timeframe=timeframe,
-                    strategy=strategy, capital=0.0, day_start_ts=0)
-    inst = session.execute(select(Instrument).where(
-        Instrument.symbol == symbol)).scalar_one_or_none()
-    if inst is None:
-        raise click.ClickException(
-            f"{symbol} Instrument 캐시 없음. 먼저 'quantpilot collect'를 실행하세요.")
-    df = load_candles_df(session, symbol, timeframe)
-    last_price = float(df["close"].iloc[-1]) if not df.empty else (
-        st.position.entry if st.position else 0.0)
-    last_ts = int(df.index[-1]) if not df.empty else _now_ms()
-    ctx = TickContext(session=session, client=None, symbol=symbol, timeframe=timeframe,
-                      strategy=None, capital=0.0, leverage=3,
-                      ct_val=inst.ct_val, lot_sz=inst.lot_sz, run_key=rk)
-    trade = panic_close(ctx, st, last_price=last_price, last_ts=last_ts)
-    # WHY persist_tick 단일 트랜잭션: append_trade + save_state 두 commit으로 나누면
-    # 사이에 크래시 시 거래는 기록됐는데 state.halted=False, position 미청산으로 남는
-    # 불일치 발생. persist_tick은 거래 행과 상태를 같은 commit에 묶어 원자성 보장.
-    persist_tick(session, rk, st, [trade] if trade is not None else [])
-    set_panic_halted(session, rk, True)
-    if trade is None:
-        click.echo(f"정지 플래그 set. 청산할 포지션 없음. (equity {st.equity:.2f})")
+    if not r.had_position:
+        click.echo(f"정지 플래그 set. 청산할 포지션 없음. (equity {r.equity:.2f})")
     else:
         click.echo(
-            f"비상청산 완료: {trade.side} → {last_price} "
-            f"(net {trade.pnl_net:+.2f}). 정지됨."
+            f"비상청산 완료 @ {r.last_price} (net {r.pnl_net:+.2f}). 정지됨."
         )
 
 
@@ -386,6 +365,32 @@ def paper_report(symbol, timeframe, strategy):
     click.echo(f"  n_trades:     {m['n_trades']}  win_rate {m['win_rate']}  "
                f"profit_factor {m['profit_factor']}")
     click.echo(f"  equity(곡선 마지막): {curve[-1][1]:.2f}")
+
+
+@cli.command()
+@click.option("--symbol", default="BTC-USDT-SWAP", show_default=True)
+@click.option("--timeframe", default="1h", show_default=True)
+@click.option("--strategy", default="rsi-mr", show_default=True)
+@click.option("--host", default="127.0.0.1", show_default=True,
+              help="킬스위치 엔드포인트가 있으므로 외부 바인딩 금지 권장.")
+@click.option("--port", default=8787, show_default=True, type=int)
+def dashboard(symbol, timeframe, strategy, host, port):
+    """MINCODE 웹 대시보드 서버 시작(실DB 읽기 + 킬스위치). 페이퍼 루프와 별개 프로세스."""
+    from quantpilot.dashboard.server import make_server
+
+    settings = Settings()
+    Path(settings.db_path).parent.mkdir(parents=True, exist_ok=True)
+    engine = make_engine(settings.db_url)
+    init_db(engine)
+    factory = make_session_factory(engine)
+    srv = make_server(factory, symbol=symbol, timeframe=timeframe, strategy=strategy,
+                      host=host, port=port)
+    click.echo(f"MINCODE 대시보드: http://{host}:{port}  (중단: Ctrl-C)")
+    click.echo("주의: 비상정지 버튼은 실제 킬스위치입니다 (CLI 'quantpilot panic'과 동일).")
+    try:
+        srv.serve_forever()
+    except KeyboardInterrupt:
+        click.echo("\n대시보드 종료.")
 
 
 if __name__ == "__main__":

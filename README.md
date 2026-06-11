@@ -165,3 +165,18 @@ pytest -m live     # 실제 OKX 연결 확인 (인터넷 필요, 수동)
 - Week 1 Plan: `docs/superpowers/plans/2026-06-07-week1-data-foundation.md`
 - Week 2 Spec: `docs/superpowers/specs/2026-06-07-week2-backtest-engine-design.md`
 - Week 2 Plan: `docs/superpowers/plans/2026-06-08-week2-backtest-engine.md`
+
+## 웹 대시보드 (MINCODE)
+
+페이퍼 런을 실시간으로 보는 로컬 웹 UI. 모의 데이터가 아니라 **돌고 있는 런의 SQLite를
+2초 폴링**으로 읽는다 (지표·청산가·사이징 전부 실코드로 계산).
+
+```bash
+quantpilot dashboard            # http://127.0.0.1:8787
+```
+
+- 화면 3개: 대시보드(캔들+RSI 스트립·equity 곡선·서킷 게이지·TP 사다리·비용분해·라이브 로그),
+  매매 로그(거래/체결/시스템 로그), 전략 설정(읽기 전용 — 변경은 루프 재시작).
+- **비상정지 버튼은 진짜 킬스위치다** — CLI `quantpilot panic`과 동일 코드 경로
+  (`quantpilot/paper/ops.py`). 클릭 → 3초 내 재클릭으로 확정.
+- 127.0.0.1 바인딩 기본. 쓰기 엔드포인트(panic)가 있으므로 외부에 노출하지 말 것.

@@ -36,3 +36,7 @@ logs/
 #   둘 다 레포에 안 올린다. CLAUDE.md(루트)는 추적 대상이라 영향 없음.
 .claude/
 .planning/
+.gstack/
+# 런타임 출력(tmux tee 로그)
+run-paper.out
+dashboard.out
