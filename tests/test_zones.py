@@ -67,3 +67,19 @@ def test_touch_and_first_zone_queries():
     # G2/TP1용: 현재가 위/아래 첫 박스 경계
     assert first_zone_above(zones, price=110.0) == 120.0
     assert first_zone_below(zones, price=110.0) == 101.0
+
+
+def test_zone_reclaim_flips_back():
+    pivots = [_piv(0, 100.0, "L"), _piv(5, 101.0, "L")]
+    closes = pd.Series([99.0, 103.0],                 # down 이탈 → top 위 reclaim
+                       index=[T0 + 10 * HOUR, T0 + 11 * HOUR])
+    zones = build_zones(pivots, atr_value=4.0, cluster_k=0.5, min_touches=2,
+                        closes=closes)
+    assert zones[0].broken_dir == "up"               # 마지막 교차 = 상향 → 지지 역할
+
+
+def test_touch_side_picks_nearest_edge():
+    near = Zone(top=100.5, bottom=100.2, created_ts=T0, touches=2, broken_dir=None)
+    far = Zone(top=100.0, bottom=99.0, created_ts=T0, touches=2, broken_dir=None)
+    got = touch_side([far, near], price=100.6, atr_value=4.0, side="long")
+    assert got is near                                # top 100.5가 100.0보다 가까움

@@ -31,7 +31,7 @@ class Divergence:
 def detect_divergence(pivots: list[Pivot], rsi: pd.Series, side: str,
                       now_ts: int, lows: pd.Series | None,
                       highs: pd.Series | None,
-                      extreme: float = 30.0) -> Divergence | None:
+                      extreme: float) -> Divergence | None:
     """now_ts 시점에 유효한 최신 다이버전스를 반환(없으면 None).
 
     Args:
@@ -41,7 +41,8 @@ def detect_divergence(pivots: list[Pivot], rsi: pd.Series, side: str,
         now_ts:  현재 타임스탬프 (confirmed_ts <= now_ts 인 피벗만 사용)
         lows:    F1 검사용 저가 시계열 (롱 전용; 롤링 창 저가 등)
         highs:   F1 검사용 고가 시계열 (숏 전용)
-        extreme: 과매도/과매수 경계 (롱=30, 숏=70)
+        extreme: 롱이면 oversold(예: 30.0), 숏이면 overbought(예: 70.0)를 명시적으로
+                 전달 — 디폴트를 두면 숏에서 필터가 조용히 무력화된다.
 
     Returns:
         Divergence 또는 None
@@ -59,6 +60,8 @@ def detect_divergence(pivots: list[Pivot], rsi: pd.Series, side: str,
     if anchor.ts not in rsi.index or prev.ts not in rsi.index:
         return None
 
+    # WHY 피벗 봉 RSI 샘플: 피벗 ts는 동일 극값 last-touch 관례라 극점 봉이 아닐 수 있어
+    # 30/70 경계 신호가 흔들릴 수 있다(리뷰 실측 Δ8~18pt). 민감도는 백테 스윕(V-4)에서 확인.
     r_prev = float(rsi.loc[prev.ts])
     r_anchor = float(rsi.loc[anchor.ts])
 

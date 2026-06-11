@@ -91,3 +91,10 @@ def test_bearish_divergence_mirror():
     d = detect_divergence(pivots, rsi, side="short", now_ts=T0 + 23 * HOUR,
                           lows=None, highs=_highs([]), extreme=70.0)
     assert d is not None and d.anchor.price == 105.0
+
+
+def test_extreme_is_required_kwarg():
+    import inspect
+    from quantpilot.strategy.divergence import detect_divergence as _dd
+    sig = inspect.signature(_dd)
+    assert sig.parameters["extreme"].default is inspect.Parameter.empty

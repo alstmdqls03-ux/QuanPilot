@@ -50,13 +50,16 @@ def build_zones(pivots, atr_value: float, cluster_k: float = 0.5,
         broken: str | None = None
         if closes is not None and len(closes):
             after = closes[closes.index > created]
+            # WHY 마지막 교차: 원문 '역할 전환(지지↔저항)'은 양방향 — down 이탈 후 top 위 종가
+            # 복귀(reclaim)면 다시 지지다. 첫 교차 break 없이 모든 after 종가를 순회하며 갱신.
             for _, c in after.items():
                 if c < bottom:
                     broken = "down"
-                    break
                 elif c > top:
                     broken = "up"
-                    break
+        # WHY created=피벗 ts 기준: H 앵커 군집은 피벗 확정 전 종가에 의해 '생성 시점에 이미
+        # 깨진' 상태일 수 있다 — 판정 시점엔 전부 과거 데이터라 룩어헤드 아님("그 레벨은 이미
+        # 깨졌었다"는 사실 반영).
         zones.append(Zone(top=top, bottom=bottom, created_ts=created,
                           touches=len(g), broken_dir=broken))
     return sorted(zones, key=lambda z: z.bottom)
@@ -66,20 +69,31 @@ def touch_side(zones: list[Zone], price: float, atr_value: float,
                side: str, proximity_k: float = 0.25) -> Zone | None:
     """롱=지지 터치 / 숏=저항 터치 판정. 근접 허용폭 = ATR×proximity_k.
 
-    지지: 원형 박스 상단(위에서 내려와 닿음) 또는 상향돌파된 박스 상단(플립 리테스트).
-    저항: 원형 박스 하단(아래에서 올라와 닿음) 또는 하향이탈된 박스 하단(플립).
+    지지: 원형 박스 상단 또는 상향돌파된 박스 상단(플립 리테스트).
+    저항: 원형 박스 하단 또는 하향이탈된 박스 하단(플립).
+    단일 price API라 접근 방향은 검증하지 않는다 — 경계 근접 여부만 판정(방향 컨텍스트는
+    호출자 몫).
+    # WHY 최근접 후보: 다중 근접 후보 시 가장 가까운 벽이 행동 기준.
     """
     tol = atr_value * proximity_k
+    best: Zone | None = None
+    best_dist: float = float("inf")
     for z in zones:
         if side == "long":
             edge_ok = z.broken_dir in (None, "up")
             if edge_ok and abs(price - z.top) <= tol and price >= z.bottom:
-                return z
+                dist = abs(price - z.top)
+                if dist < best_dist:
+                    best_dist = dist
+                    best = z
         else:
             edge_ok = z.broken_dir in (None, "down")
             if edge_ok and abs(price - z.bottom) <= tol and price <= z.top:
-                return z
-    return None
+                dist = abs(price - z.bottom)
+                if dist < best_dist:
+                    best_dist = dist
+                    best = z
+    return best
 
 
 def first_zone_above(zones: list[Zone], price: float) -> float | None:
