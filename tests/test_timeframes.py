@@ -17,3 +17,9 @@ def test_unknown_timeframe_raises():
     with pytest.raises(ValueError) as e:
         timeframe_to_ms("7m")
     assert "7m" in str(e.value)
+
+
+def test_4h_supported():
+    from quantpilot.timeframes import SUPPORTED_TIMEFRAMES, timeframe_to_ms
+    assert "4h" in SUPPORTED_TIMEFRAMES
+    assert timeframe_to_ms("4h") == 4 * 60 * 60 * 1000
