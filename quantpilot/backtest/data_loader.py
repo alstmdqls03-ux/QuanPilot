@@ -51,6 +51,16 @@ def detect_gaps(ts_list: list[int], timeframe_ms: int) -> tuple[int, list[tuple[
     return gaps, ranges
 
 
+def closed_htf_slice(htf_df: pd.DataFrame, now_ts: int, htf_ms: int,
+                     ltf_ms: int) -> pd.DataFrame:
+    """LTF 봉(ts=now_ts) 마감 시점에 '이미 마감된' HTF 봉만 반환.
+
+    WHY: 캔들 ts는 봉 '시작' 시각. LTF 봉 마감 = now_ts+ltf_ms, HTF 봉 마감 =
+    ts+htf_ms. 마감 안 된 HTF 봉을 보면 룩어헤드(미래 정보)가 된다.
+    """
+    return htf_df[htf_df.index + htf_ms <= now_ts + ltf_ms]
+
+
 class DataGapError(Exception):
     """데이터 구멍 또는 부재로 백테스트를 막을 때."""
 

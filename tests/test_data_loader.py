@@ -38,3 +38,16 @@ def test_load_candles_df(session):
     assert len(df) == 3
     assert df.index.name == "ts"
     assert df["close"].iloc[-1] == 102.0
+
+
+def test_closed_htf_slice_excludes_unclosed_4h():
+    import pandas as pd
+    from quantpilot.backtest.data_loader import closed_htf_slice
+    H = 3_600_000
+    htf = pd.DataFrame({"close": [1.0, 2.0, 3.0]}, index=[0, 4 * H, 8 * H])
+    s = closed_htf_slice(htf, now_ts=3 * H, htf_ms=4 * H, ltf_ms=H)
+    assert list(s.index) == [0]
+    s = closed_htf_slice(htf, now_ts=6 * H, htf_ms=4 * H, ltf_ms=H)
+    assert list(s.index) == [0]
+    s = closed_htf_slice(htf, now_ts=7 * H, htf_ms=4 * H, ltf_ms=H)
+    assert list(s.index) == [0, 4 * H]
