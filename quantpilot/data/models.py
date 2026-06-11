@@ -21,7 +21,7 @@ class Candle(Base):
     id = Column(Integer, primary_key=True)
     exchange = Column(String, nullable=False, default="okx")
     symbol = Column(String, nullable=False)       # "BTC-USDT-SWAP"
-    timeframe = Column(String, nullable=False)    # "1h" | "15m"
+    timeframe = Column(String, nullable=False)    # "15m" | "1h" | "4h" 등
     # WHY String timeframe: ccxt가 문자열로 받음. enum 변환 한 단계 제거.
     ts = Column(BigInteger, nullable=False)       # 캔들 open time, ms epoch UTC
     open = Column(Float, nullable=False)

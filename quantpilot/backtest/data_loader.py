@@ -38,7 +38,7 @@ def detect_gaps(ts_list: list[int], timeframe_ms: int) -> tuple[int, list[tuple[
     """연속 ts 사이 간격이 timeframe_ms보다 크면 누락. (누락봉수, [(start,end),...]) 반환.
 
     WHY: 백테스트 전 데이터 구멍을 감지. RSI는 연속 봉 가정이라 구멍이 결과를 왜곡.
-    감지·경고만; 메우기는 TODOS(post-MVP).
+    감지·경고만; 메우기는 collector.heal_gaps가 담당.
     """
     gaps = 0
     ranges: list[tuple[int, int]] = []

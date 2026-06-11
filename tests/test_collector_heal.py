@@ -32,10 +32,32 @@ def test_heal_fills_interior_gap(session):
     df = load_candles_df(session, "BTC-USDT-SWAP", "1h")
     missing, _ = detect_gaps(list(df.index), HOUR)
     assert missing == 0
-    assert client.calls and client.calls[0] == T0 + 5 * HOUR
+    assert client.calls[0] == T0 + 5 * HOUR
 
 
 def test_heal_noop_when_continuous(session):
     _seed(session, [T0 + i * HOUR for i in range(5)])
     r = heal_gaps(session, FakeClient(), "BTC-USDT-SWAP", "1h", now_ms=T0 + 100 * HOUR)
     assert r == {"gaps_found": 0, "inserted": 0}
+
+
+def test_heal_multipage_advances_cursor(session):
+    # gap 5봉 > page_limit 2 → while 루프가 여러 번 돌며 커서 전진해야 함
+    _seed(session, [T0 + i * HOUR for i in [0, 1, 2, 8, 9]])     # 3..7 누락(5봉)
+    client = FakeClient()
+    r = heal_gaps(session, client, "BTC-USDT-SWAP", "1h",
+                  now_ms=T0 + 100 * HOUR, page_limit=2)
+    assert r["gaps_found"] == 5 and r["inserted"] == 5
+    assert len(client.calls) >= 3                       # 2+2+1 페이지
+    assert client.calls == sorted(client.calls)         # 커서 단조 전진
+
+
+def test_heal_partial_fill_reported(session):
+    # 거래소가 빈 응답을 주면(히스토리 한계) 일부만 채우고 정직하게 보고
+    _seed(session, [T0 + i * HOUR for i in [0, 1, 2, 8, 9]])
+    class EmptyClient:
+        def fetch_ohlcv(self, symbol, timeframe, since_ms, limit):
+            return []
+    r = heal_gaps(session, EmptyClient(), "BTC-USDT-SWAP", "1h",
+                  now_ms=T0 + 100 * HOUR)
+    assert r["gaps_found"] == 5 and r["inserted"] == 0

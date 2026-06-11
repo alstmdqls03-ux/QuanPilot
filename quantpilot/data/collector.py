@@ -185,13 +185,12 @@ def heal_gaps(session, client, symbol: str, timeframe: str, now_ms: int,
     백테스트 gap 게이트·RSI 연속성 가정을 만족시키려면 구멍을 명시적으로 메워야 한다.
     detect_gaps(data_loader)를 재사용 — 구멍 정의를 한 곳만 소유.
     """
-    from sqlalchemy import select as _select
+    # WHY 지역 import: data층→backtest층 역방향 의존을 함수 안에 가둠(layering).
     from quantpilot.backtest.data_loader import detect_gaps
-    from quantpilot.data.models import Candle
 
     tf_ms = timeframe_to_ms(timeframe)
     ts_list = [r[0] for r in session.execute(
-        _select(Candle.ts).where(
+        select(Candle.ts).where(
             Candle.exchange == exchange, Candle.symbol == symbol,
             Candle.timeframe == timeframe).order_by(Candle.ts)).all()]
     if len(ts_list) < 2:
@@ -213,7 +212,8 @@ def heal_gaps(session, client, symbol: str, timeframe: str, now_ms: int,
                 break
             inserted += upsert_candles(session, exchange, symbol, timeframe,
                                        rows, now_ms)
-            cursor = rows[-1]["ts"] + tf_ms
+            # WHY max(): ccxt가 정렬 안 된 페이지를 줘도 커서 역행 방지(collect_ohlcv와 동일 이유).
+            cursor = max(r["ts"] for r in rows) + tf_ms
     return {"gaps_found": missing, "inserted": inserted}
 
 

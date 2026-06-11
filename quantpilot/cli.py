@@ -12,7 +12,7 @@ import click
 from quantpilot.config import Settings
 from quantpilot.data.db import init_db, make_engine, make_session_factory
 from quantpilot.data.collector import (
-    collect_funding, collect_ohlcv, upsert_instruments,
+    collect_funding, collect_ohlcv, heal_gaps, upsert_instruments,
 )
 from quantpilot.data.models import Candle, FundingRate, Instrument
 from quantpilot.timeframes import SUPPORTED_TIMEFRAMES, timeframe_to_ms
@@ -71,7 +71,6 @@ def collect(symbol: str, timeframe: str, days: int, heal: bool):
             f"'quantpilot status'로 실제 적재 범위를 확인하세요."
         )
     if heal:
-        from quantpilot.data.collector import heal_gaps
         r = heal_gaps(session, client, symbol, timeframe, now_ms=_now_ms())
         click.echo(f"gap 메우기: 누락 {r['gaps_found']}봉 중 {r['inserted']}봉 채움")
 
