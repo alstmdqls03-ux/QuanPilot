@@ -102,15 +102,19 @@ def check_exits(pos: Position, bar: dict, fee_bps: float, slippage_bps: float,
 
 def open_position(side: str, bar: dict, stop: float, capital: float, ct_val: float,
                   lot_sz: float, leverage: int, fee_bps: float, slippage_bps: float,
-                  targets: list[tuple[float, float]] | None = None):
+                  targets: list[tuple[float, float]] | None = None,
+                  risk_mult: float = 1.0):
     """진입 시도. 사이징/청산가드 통과 시 Position 반환, 아니면 (None, 0fee)."""
     raw_entry = bar["close"]
     buy_side = "buy" if side == "long" else "sell"
     entry = apply_slippage(raw_entry, slippage_bps, buy_side)
     try:
         assert_stop_within_liquidation(entry, stop, leverage, side)
+        # WHY risk_mult: BOT-SPEC §2.3 점수 연동 — 최소 진입(4~5점)=0.5배(2.5%),
+        # 강진입(6점+)=1.0배(5%). 근거 강도에 비례한 베팅. 기본 1.0이라 기존 전략 불변.
+        # 사이징 invariant(assert)는 calculate_position_size 안에서 축소된 예산으로 동일 강제.
         # slippage_bps 전달: 사이징이 손절 슬리피지를 5% 예산에 반영해야 불변식 유지.
-        sizing = calculate_position_size(capital, 0.05, entry, stop, ct_val, lot_sz,
+        sizing = calculate_position_size(capital, 0.05 * risk_mult, entry, stop, ct_val, lot_sz,
                                          leverage=leverage, fee_bps=fee_bps,
                                          slippage_bps=slippage_bps)
     except (StopBeyondLiquidationError, InsufficientCapitalError):
@@ -170,7 +174,8 @@ def run_backtest(candles, strategy, capital, ct_val, lot_sz, leverage,
             position, open_fee = open_position(
                 signal.side, bar, signal.suggested_stop, equity, ct_val, lot_sz,
                 leverage, fee_bps, slippage_bps,
-                targets=signal.meta.get("targets"))
+                targets=signal.meta.get("targets"),
+                risk_mult=float(signal.meta.get("risk_mult", 1.0)))
             if position is not None:
                 equity -= open_fee  # 진입 수수료 즉시 실현
             pending_fills = []
