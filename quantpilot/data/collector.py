@@ -177,6 +177,46 @@ def collect_funding(session, client, symbol: str, days: int, now_ms: int,
     return {"symbol": symbol, "inserted": total_inserted, "truncated": truncated}
 
 
+def heal_gaps(session, client, symbol: str, timeframe: str, now_ms: int,
+              exchange: str = "okx", page_limit: int = 100) -> dict:
+    """기존 적재 데이터의 누락 구간만 재수집해 메운다.
+
+    WHY: 증분 수집은 max(ts) 워터마크 기반이라 중간 구멍을 다시 안 받는다(영구 hole).
+    백테스트 gap 게이트·RSI 연속성 가정을 만족시키려면 구멍을 명시적으로 메워야 한다.
+    detect_gaps(data_loader)를 재사용 — 구멍 정의를 한 곳만 소유.
+    """
+    from sqlalchemy import select as _select
+    from quantpilot.backtest.data_loader import detect_gaps
+    from quantpilot.data.models import Candle
+
+    tf_ms = timeframe_to_ms(timeframe)
+    ts_list = [r[0] for r in session.execute(
+        _select(Candle.ts).where(
+            Candle.exchange == exchange, Candle.symbol == symbol,
+            Candle.timeframe == timeframe).order_by(Candle.ts)).all()]
+    if len(ts_list) < 2:
+        return {"gaps_found": 0, "inserted": 0}
+    missing, ranges = detect_gaps(ts_list, tf_ms)
+    if missing == 0:
+        return {"gaps_found": 0, "inserted": 0}
+    inserted = 0
+    for start, end in ranges:
+        cursor = start
+        while cursor <= end:
+            batch = client.fetch_ohlcv(symbol, timeframe, since_ms=cursor,
+                                       limit=page_limit)
+            if not batch:
+                break               # 거래소 히스토리 한계 — 남은 구멍은 보고로 드러남
+            rows = [b for b in batch if b["ts"] <= end]
+            rows = drop_unclosed(rows, tf_ms, now_ms)
+            if not rows:
+                break
+            inserted += upsert_candles(session, exchange, symbol, timeframe,
+                                       rows, now_ms)
+            cursor = rows[-1]["ts"] + tf_ms
+    return {"gaps_found": missing, "inserted": inserted}
+
+
 def upsert_instruments(session, client, now_ms: int, exchange: str = "okx") -> int:
     """거래소 마켓 전체를 받아 Instrument 캐시 upsert. 처리한 행 수 반환.
 

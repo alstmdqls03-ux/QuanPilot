@@ -45,7 +45,8 @@ def cli():
 @click.option("--symbol", default="BTC-USDT-SWAP", show_default=True)
 @click.option("--timeframe", default="1h", show_default=True)
 @click.option("--days", default=365, show_default=True, type=int)
-def collect(symbol: str, timeframe: str, days: int):
+@click.option("--heal", is_flag=True, default=False, help="기존 데이터의 누락 구간만 재수집")
+def collect(symbol: str, timeframe: str, days: int, heal: bool):
     """OHLCV 캔들 증분 수집."""
     # 사람 실수(잘못된 timeframe)는 네트워크 타기 전에 즉시 거부.
     if timeframe not in SUPPORTED_TIMEFRAMES:
@@ -69,6 +70,10 @@ def collect(symbol: str, timeframe: str, days: int):
             f"⚠️  OKX가 요청한 {days}일치 전부를 주지 않음(히스토리 한계 가능성). "
             f"'quantpilot status'로 실제 적재 범위를 확인하세요."
         )
+    if heal:
+        from quantpilot.data.collector import heal_gaps
+        r = heal_gaps(session, client, symbol, timeframe, now_ms=_now_ms())
+        click.echo(f"gap 메우기: 누락 {r['gaps_found']}봉 중 {r['inserted']}봉 채움")
 
 
 @cli.command(name="collect-funding")
