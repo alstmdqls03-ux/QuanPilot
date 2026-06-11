@@ -25,14 +25,31 @@ def test_build_zones_clusters_nearby_pivots():
 
 def test_zone_break_is_close_based_and_flips_role():
     pivots = [_piv(0, 100.0, "L"), _piv(5, 101.0, "L")]
-    closes = pd.Series([102.0, 99.5],
-                       index=[T0 + 10 * HOUR, T0 + 11 * HOUR])
+    # 박스 안 종가(100.5) → 이탈 아님
+    inside = pd.Series([100.5], index=[T0 + 10 * HOUR])
     zones = build_zones(pivots, atr_value=4.0, cluster_k=0.5, min_touches=2,
-                        closes=closes.iloc[:1])
-    assert zones[0].broken_dir is None           # 종가 102 — 이탈 아님
+                        closes=inside)
+    assert zones[0].broken_dir is None
+    # 하향: 종가 99.5 < bottom 100 → down (이후 저항)
+    down = pd.Series([100.5, 99.5], index=[T0 + 10 * HOUR, T0 + 11 * HOUR])
     zones = build_zones(pivots, atr_value=4.0, cluster_k=0.5, min_touches=2,
-                        closes=closes)           # 둘째 봉 종가 99.5 < bottom 100
-    assert zones[0].broken_dir == "down"         # 하향 이탈 → 이후 저항
+                        closes=down)
+    assert zones[0].broken_dir == "down"
+    # 상향: 종가 102.0 > top 101 → up (이후 지지) — 대칭
+    up = pd.Series([100.5, 102.0], index=[T0 + 10 * HOUR, T0 + 11 * HOUR])
+    zones = build_zones(pivots, atr_value=4.0, cluster_k=0.5, min_touches=2,
+                        closes=up)
+    assert zones[0].broken_dir == "up"
+
+
+def test_zone_wick_break_ignored():
+    # 장중 low 98(이탈처럼 보임)이어도 종가가 박스 안이면 유지 — V4 휩소.
+    # build_zones는 closes만 받으므로 '종가 기준'이 구조적으로 보장됨을 핀:
+    pivots = [_piv(0, 100.0, "L"), _piv(5, 101.0, "L")]
+    closes = pd.Series([100.2, 100.8], index=[T0 + 10 * HOUR, T0 + 11 * HOUR])
+    zones = build_zones(pivots, atr_value=4.0, cluster_k=0.5, min_touches=2,
+                        closes=closes)
+    assert zones[0].broken_dir is None
 
 
 def test_touch_and_first_zone_queries():

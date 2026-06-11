@@ -22,23 +22,17 @@ class Zone:
 
 def build_zones(pivots, atr_value: float, cluster_k: float = 0.5,
                 min_touches: int = 2,
-                closes: pd.Series | None = None,
-                break_proximity_k: float = 0.25) -> list[Zone]:
+                closes: pd.Series | None = None) -> list[Zone]:
     """확정 피벗을 가격 근접(ATR×cluster_k)으로 군집해 박스 생성 + 이탈 판정.
 
     closes: 박스 생성 이후의 '종가' 시계열(index=ts). 종가가 bottom 아래로 마감하면
     broken_dir="down", top 위로 마감하면 "up". 장중 고저는 보지 않는다(휩소 무시).
 
-    WHY 비대칭 이탈 기준:
-    - 하향(down): c < bottom — 지지 박스 저점 아래 종가는 즉시 의미 있는 이탈.
-    - 상향(up): c > top + ATR×break_proximity_k — 박스 상단 근방의 약한 상승은
-      노이즈(리테스트 가능성)로 취급해 ATR×proximity 버퍼 이상 벗어났을 때만 인정.
-      이로써 '종가=top+proximity_buffer'처럼 경계에 딱 걸린 경우 이탈 처리를 피한다.
+    # WHY 대칭·무버퍼: 원전 규칙은 '봉마감 종가의 경계 통과'뿐 — 방향별 버퍼는 근거 없는 자유변수.
     """
     if not pivots or atr_value <= 0:
         return []
     eps = atr_value * cluster_k
-    up_buf = atr_value * break_proximity_k  # 상향 이탈 버퍼(하향엔 미사용)
     ordered = sorted(pivots, key=lambda p: p.price)
     groups: list[list] = [[ordered[0]]]
     for p in ordered[1:]:
@@ -60,7 +54,7 @@ def build_zones(pivots, atr_value: float, cluster_k: float = 0.5,
                 if c < bottom:
                     broken = "down"
                     break
-                if c > top + up_buf:
+                elif c > top:
                     broken = "up"
                     break
         zones.append(Zone(top=top, bottom=bottom, created_ts=created,
