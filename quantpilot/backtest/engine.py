@@ -75,6 +75,12 @@ def check_exits(pos: Position, bar: dict, fee_bps: float, slippage_bps: float,
             idx += 1
             continue
         qty = int(round(pos.original_contracts * frac))
+        # WHY 마지막 타깃 잔량 흡수: 1계약 포지션은 모든 타깃이 round→0이라 TP가
+        # 영원히 침묵하고 stop으로만 청산됐다(TODOS Codex #7). 마지막 타깃이 잔량을
+        # 받으면 소액 계좌에서도 사다리가 동작한다.
+        # remaining은 아직 제거 전 상태이므로 '현재 남은 타깃 중 마지막'을 체크.
+        if (price, frac) == remaining[-1]:
+            qty = contracts_left
         qty = min(qty, contracts_left)
         if qty <= 0:
             remaining.remove((price, frac))
@@ -92,10 +98,10 @@ def check_exits(pos: Position, bar: dict, fee_bps: float, slippage_bps: float,
         return None, fills
     pos.contracts = contracts_left
     pos.targets_remaining = remaining
-    # WHY BE 트레일: BOT-SPEC §7.1 — 50% 익절(TP1) 후 손절을 본전으로 이동해
-    # '이긴 거래를 진 거래로 만들지 않는다'. 같은 봉에서는 손절 먼저 검사가 이미
-    # 끝났으므로 이동된 stop은 다음 봉부터 적용된다(보수 가정 유지).
-    if be_trail_after_tp1 and any(f.reason == "tp1" for f in fills):
+    # WHY 'fills' 조건: TP reason 라벨은 호출-상대적(다음 봉의 원래 TP2가 'tp1'로
+    # 라벨될 수 있음)이라 깨지기 쉽다. 이 분기는 stop 미체결 + TP fills 존재 경로만
+    # 도달하므로 '첫 TP 체결 이후 본전 이동' 의미와 동치이고, 재적용은 stop=entry 멱등.
+    if be_trail_after_tp1 and fills:
         pos.stop = pos.entry
     return pos, fills
 
@@ -105,6 +111,10 @@ def open_position(side: str, bar: dict, stop: float, capital: float, ct_val: flo
                   targets: list[tuple[float, float]] | None = None,
                   risk_mult: float = 1.0):
     """진입 시도. 사이징/청산가드 통과 시 Position 반환, 아니면 (None, 0fee)."""
+    # WHY assert: 리스크 불변식은 assert로 강제(프로젝트 규약). risk_mult>1이면
+    # per-trade 5% 캡이 조용히 뚫린다(meta 오타 0.5→5 하나로 9.8% 베팅 재현됨).
+    # risk_mult≤0은 0계약 또는 음수 사이징을 유발하므로 함께 차단.
+    assert 0.0 < risk_mult <= 1.0, f"risk_mult 범위 위반: {risk_mult} (0<x<=1)"
     raw_entry = bar["close"]
     buy_side = "buy" if side == "long" else "sell"
     entry = apply_slippage(raw_entry, slippage_bps, buy_side)
@@ -123,6 +133,19 @@ def open_position(side: str, bar: dict, stop: float, capital: float, ct_val: flo
     # 기존 R-배수 사다리 그대로 → 기존 전략(rsi-mr) 거동 변화 0.
     if targets is None:
         targets = build_targets(entry, stop, side)
+    else:
+        # WHY 정규화·검증: 전략 meta의 타깃은 JSON 경유 시 list가 되기 쉬운데
+        # check_exits의 remaining.remove((price,frac))는 tuple만 매치 — 첫 TP 체결에서
+        # ValueError → 페이퍼 루프가 같은 봉을 무한 재시도(livelock). 잘못된 방향/비중도
+        # 돈 계산을 깨므로 진입 전에 시끄럽게 실패시킨다.
+        targets = [tuple(t) for t in targets]
+        frac_sum = 0.0
+        for price, frac in targets:
+            assert 0.0 < frac <= 1.0, f"타깃 비중 범위 위반: {frac}"
+            assert (price > entry) if side == "long" else (price < entry), \
+                f"타깃 가격이 이익 방향이 아님: side={side} entry={entry} target={price}"
+            frac_sum += frac
+        assert frac_sum <= 1.0 + 1e-9, f"타깃 비중 합 {frac_sum} > 1"
     pos = Position(side=side, entry=entry, contracts=sizing.contracts, stop=stop,
                    targets_remaining=targets, opened_ts=bar["ts"],
                    original_contracts=sizing.contracts)
