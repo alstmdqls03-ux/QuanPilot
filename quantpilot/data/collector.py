@@ -202,6 +202,7 @@ def heal_gaps(session, client, symbol: str, timeframe: str, now_ms: int,
     for start, end in ranges:
         cursor = start
         while cursor <= end:
+            prev_cursor = cursor
             batch = client.fetch_ohlcv(symbol, timeframe, since_ms=cursor,
                                        limit=page_limit)
             if not batch:
@@ -214,6 +215,8 @@ def heal_gaps(session, client, symbol: str, timeframe: str, now_ms: int,
                                        rows, now_ms)
             # WHY max(): ccxt가 정렬 안 된 페이지를 줘도 커서 역행 방지(collect_ohlcv와 동일 이유).
             cursor = max(r["ts"] for r in rows) + tf_ms
+            if cursor <= prev_cursor:   # WHY: 거래소가 since 무시하고 동일 페이지 반복 반환 시 무한루프 방지
+                break
     return {"gaps_found": missing, "inserted": inserted}
 
 

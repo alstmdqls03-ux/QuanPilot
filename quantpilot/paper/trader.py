@@ -197,6 +197,12 @@ def run_one_tick(ctx: TickContext, state: PaperState):
     # 매 틱 최신 HTF 캔들을 strategy.set_htf로 주입해야 S6 판정이 신선하게 유지된다.
     # 백테(backtest 명령)는 실행 시 한 번만 주입해도 되지만 페이퍼는 틱마다 재주입 필요.
     if ctx.htf and hasattr(ctx.strategy, "set_htf"):
+        if ctx.client is not None:
+            # WHY HTF도 수집: 루프가 LTF만 폴링하면 4h 테이블이 냉동돼 S6가 백테와 갈린다
+            # (/review Claude+Codex 확정). 매 틱 HTF 증분 수집 후 주입해야 신선.
+            # now_ms는 위 LTF collect와 동일 값(같은 틱에서 일관된 시각 기준).
+            collect_ohlcv(ctx.session, ctx.client, ctx.symbol, ctx.htf,
+                          days=2, now_ms=int(time.time() * 1000))
         from quantpilot.timeframes import timeframe_to_ms as _tfms
         htf_df = load_candles_df(ctx.session, ctx.symbol, ctx.htf)
         ctx.strategy.set_htf(htf_df)

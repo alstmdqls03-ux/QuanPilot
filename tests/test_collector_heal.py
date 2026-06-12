@@ -61,3 +61,35 @@ def test_heal_partial_fill_reported(session):
     r = heal_gaps(session, EmptyClient(), "BTC-USDT-SWAP", "1h",
                   now_ms=T0 + 100 * HOUR)
     assert r["gaps_found"] == 5 and r["inserted"] == 0
+
+
+def test_heal_stuck_client_terminates(session):
+    """Fix 3: 거래소가 since를 무시하고 고정 봉을 반복 반환해도 무한루프 없이 종료.
+
+    WHY: StuckClient는 항상 동일한 ts를 반환 → max(rows)+tf_ms가 cursor와 같아짐
+    → cursor <= prev_cursor 조건이 True → break. 유한 종료 보장.
+    수정 전: cursor = max(rows)+tf_ms가 고정값이므로 while cursor<=end 가 무한루프.
+    """
+    # gap 3봉(T0+3h~T0+5h) 생성
+    _seed(session, [T0 + i * HOUR for i in [0, 1, 2, 6, 7]])
+
+    class StuckClient:
+        """항상 gap 시작 직전 봉을 반환(since 무시). cursor가 전진 안 함."""
+        def __init__(self):
+            self.calls = 0
+
+        def fetch_ohlcv(self, symbol, timeframe, since_ms, limit):
+            self.calls += 1
+            # gap 시작 이전 ts 고정 반환 → cursor = stuck_ts + tf_ms = T0+3h (end 이하)
+            stuck_ts = T0 + 2 * HOUR  # gap start=T0+3h 이하라 항상 end(=T0+5h) 이하
+            return [{"ts": stuck_ts, "open": 1.0, "high": 2.0,
+                     "low": 0.5, "close": 1.5, "volume": 3.0}]
+
+    client = StuckClient()
+    # timeout: 루프가 무한이면 테스트 자체가 멈추므로 호출 횟수로 간접 검증
+    r = heal_gaps(session, client, "BTC-USDT-SWAP", "1h",
+                  now_ms=T0 + 100 * HOUR)
+    # 유한 종료: StuckClient는 upsert=0(stuck_ts가 이미 DB에 있거나 end 이하), call≥1
+    assert client.calls >= 1, "클라이언트가 호출되지 않음"
+    # 핵심: 결과 반환됨(무한루프 없이 종료) — gaps_found≥3(gap 있음)
+    assert r["gaps_found"] >= 3, f"gap이 감지되지 않음: {r}"

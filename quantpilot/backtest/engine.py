@@ -75,11 +75,10 @@ def check_exits(pos: Position, bar: dict, fee_bps: float, slippage_bps: float,
             idx += 1
             continue
         qty = int(round(pos.original_contracts * frac))
-        # WHY 마지막 타깃 잔량 흡수: 1계약 포지션은 모든 타깃이 round→0이라 TP가
-        # 영원히 침묵하고 stop으로만 청산됐다(TODOS Codex #7). 마지막 타깃이 잔량을
-        # 받으면 소액 계좌에서도 사다리가 동작한다.
-        # remaining은 아직 제거 전 상태이므로 '현재 남은 타깃 중 마지막'을 체크.
-        if (price, frac) == remaining[-1]:
+        # WHY 'qty <= 0'일 때만 흡수: 원 의도는 1계약 포지션(모든 타깃이 round→0)을
+        # 살리는 것. 무조건 흡수하면 의도적 러너(예: confluence의 0.5/0.4 = 10% 잔여)를
+        # 마지막 타깃이 삼켜 PnL·보유기간이 조용히 바뀐다(/review Claude+Codex 확정).
+        if (price, frac) == remaining[-1] and qty <= 0:
             qty = contracts_left
         qty = min(qty, contracts_left)
         if qty <= 0:

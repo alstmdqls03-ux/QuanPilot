@@ -589,3 +589,105 @@ def test_restart_with_open_position_then_stop(session):
     # equity 보존: 최종 equity == 진입 전 원금 + pnl_net
     assert abs(st_final.equity - (eq_pre_entry + db_trades[0].pnl_net)) < 1e-6, (
         f"equity 보존 불일치: {st_final.equity} != {eq_pre_entry + db_trades[0].pnl_net}")
+
+
+# ─── Fix 2: paper --htf가 HTF 캔들을 실제로 수집해야 함 ───────────────────────
+
+def test_run_one_tick_htf_collect_called_with_client(session):
+    """Fix 2: ctx.htf가 있고 ctx.client가 있으면 HTF도 collect_ohlcv로 수집해야 함.
+
+    WHY: 수정 전 run_one_tick은 LTF만 collect_ohlcv하고 HTF는 load만 함 → 4h 테이블이
+    냉동. 수정 후 HTF도 수집하므로 client의 fetch_ohlcv가 LTF + HTF 2번 호출됨.
+    ctx.htf=None이면 HTF collect를 건너뜀(기존 동작 불변).
+    /review Claude+Codex 확정.
+    """
+    from quantpilot.paper.store import PaperState, make_run_key
+    from quantpilot.paper.trader import TickContext, run_one_tick
+    from quantpilot.data.models import Candle
+
+    tf = 3_600_000
+    base = 1_700_000_000_000
+
+    # LTF + HTF 봉 사전 시딩 (set_htf 주입을 위해)
+    rows = [(base + i * tf, 100.0, 101.0, 99.0, 100.0) for i in range(3)]
+    _seed_candles(session, "BTC-USDT-SWAP", "1h", rows)
+    session.add(Candle(exchange="okx", symbol="BTC-USDT-SWAP", timeframe="4h",
+                       ts=base, open=100.0, high=102.0, low=98.0, close=100.0,
+                       volume=1.0, inserted_at=base))
+    session.commit()
+
+    # 호출을 추적하는 스파이 클라이언트
+    class _SpyClient:
+        def __init__(self):
+            self.calls: list[tuple[str, str]] = []   # [(symbol, timeframe), ...]
+
+        def fetch_ohlcv(self, symbol, timeframe, since_ms, limit):
+            self.calls.append((symbol, timeframe))
+            return []   # 빈 응답 — 증분 없음, upsert 0건이어도 동작
+
+    spy_client = _SpyClient()
+
+    class _SpyHoldStrategy(_HoldStrategy):
+        def __init__(self):
+            super().__init__()
+            self.htf_calls = []
+            self.htf_ms = 4 * tf
+            self.ltf_ms = tf
+
+        def set_htf(self, df):
+            self.htf_calls.append(df)
+
+    spy_strategy = _SpyHoldStrategy()
+    rk = make_run_key("BTC-USDT-SWAP", "1h", "t-hold")
+    ctx = TickContext(session=session, client=spy_client, symbol="BTC-USDT-SWAP",
+                      timeframe="1h", strategy=spy_strategy, capital=1000.0,
+                      leverage=3, ct_val=0.01, lot_sz=1.0, run_key=rk, htf="4h")
+    st = PaperState(run_key=rk, symbol="BTC-USDT-SWAP", timeframe="1h",
+                    strategy="t-hold", equity=1000.0, day_start_equity=1000.0,
+                    day_start_ts=0)
+    run_one_tick(ctx, st)
+
+    # LTF + HTF 각각 collect_ohlcv 호출됐는지
+    called_tfs = [c[1] for c in spy_client.calls]
+    assert "1h" in called_tfs, "LTF(1h) collect_ohlcv 호출 없음"
+    assert "4h" in called_tfs, (
+        "HTF(4h) collect_ohlcv 호출 없음 — Fix 2 미적용: "
+        f"호출된 timeframes={called_tfs}")
+
+
+def test_run_one_tick_htf_none_no_extra_collect(session):
+    """ctx.htf=None이면 HTF collect 건너뜀 — 기존 동작 불변 확인.
+
+    WHY: Fix 2는 ctx.htf가 있을 때만 HTF를 수집해야 함.
+    htf=None 경우 LTF만 수집(기존과 동일).
+    """
+    from quantpilot.paper.store import PaperState, make_run_key
+    from quantpilot.paper.trader import TickContext, run_one_tick
+
+    tf = 3_600_000
+    base = 1_700_000_000_000
+    rows = [(base + i * tf, 100.0, 101.0, 99.0, 100.0) for i in range(3)]
+    _seed_candles(session, "BTC-USDT-SWAP", "1h", rows)
+
+    class _SpyClient:
+        def __init__(self):
+            self.calls: list[tuple[str, str]] = []
+
+        def fetch_ohlcv(self, symbol, timeframe, since_ms, limit):
+            self.calls.append((symbol, timeframe))
+            return []
+
+    spy_client = _SpyClient()
+    rk = make_run_key("BTC-USDT-SWAP", "1h", "t-hold")
+    ctx = TickContext(session=session, client=spy_client, symbol="BTC-USDT-SWAP",
+                      timeframe="1h", strategy=_HoldStrategy(), capital=1000.0,
+                      leverage=3, ct_val=0.01, lot_sz=1.0, run_key=rk)
+    # htf 지정 안 함 (기본 None)
+    st = PaperState(run_key=rk, symbol="BTC-USDT-SWAP", timeframe="1h",
+                    strategy="t-hold", equity=1000.0, day_start_equity=1000.0,
+                    day_start_ts=0)
+    run_one_tick(ctx, st)
+
+    called_tfs = [c[1] for c in spy_client.calls]
+    assert "1h" in called_tfs, "LTF(1h) collect 호출 없음"
+    assert "4h" not in called_tfs, f"htf=None인데 4h collect 호출됨: {called_tfs}"

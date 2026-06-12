@@ -119,6 +119,20 @@ Week 3는 $0 페이퍼라 아래는 의도적 단순화로 남겨둠. 실거래 
 코드 리뷰(/review)에서 지적됐으나 Phase 1(인프라 검증, $0)에선 영향이 작아 deferred.
 실데이터 엣지 품질 저하 가능성 있으므로 Week 5 진입 전 재검토 필요.
 
+### 리뷰 추가 발견 (/review Claude+Codex 크로스모델 확정 — 수정 완료 이후 남은 이월)
+
+- [ ] **숏 방향 confluence end-to-end 테스트 부재** — 거울 코드(first_zone_below·숏 stop/TP/G2)가
+  미검증. short_setup_df로 sig.side=="short" 핀 필요.
+- [ ] **conflict 동점·G2 양성 분기 미커버** — test_conflict/test_g2가 약한 음성 단언만.
+  실분기(blocked=="conflict"/"G2") 양성 핀 필요.
+- [ ] **S6(4h 보너스) 전략레벨 미커버** — htf_df 주입해 score +1~2 되는지 검증.
+- [ ] **confluence.generate_signal 분해 + 롱/숏 거울 중복** — sign 변수로 분기 축소,
+  stop/타깃 블록 헬퍼 추출.
+- [ ] **closed_htf_slice `<=` 경계** — 동시마감 HTF봉 포함, 라이브 클럭스큐 시 미확정 4h
+  누수 가능. strict `<` 또는 한 틱 지연 검토.
+- [ ] **매직넘버 명명** — confluence TP2 0.5/2.5·TP1 1.5 폴백 배수, fib in_entry_zone의
+  LEVELS 인덱스 하드코딩.
+
 ### 1순위 — 신호 희소성 (검증 결과: `docs/validation/confluence-v1.md`, 합격 못 함)
 confluence v1은 1h에서 거래를 충분히(20+) 모으면 PF≈1(엣지 없음). 실거래 후보가 되려면
 아래로 신호 양·질을 바꿔 **재검증(OOS PF>1 @ n≥20)**이 선행돼야 한다.
