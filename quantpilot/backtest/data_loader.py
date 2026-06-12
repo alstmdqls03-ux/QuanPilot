@@ -65,11 +65,22 @@ class DataGapError(Exception):
     """데이터 구멍 또는 부재로 백테스트를 막을 때."""
 
 
-def load_with_gap_check(session, symbol: str, timeframe: str, allow_gaps: bool):
+def load_with_gap_check(
+    session,
+    symbol: str,
+    timeframe: str,
+    allow_gaps: bool,
+    start_ms: int | None = None,
+    end_ms: int | None = None,
+):
     """DataFrame 로드 + gap 검사. 반환 (df, gaps, ranges).
     allow_gaps=False이고 gap>0이면 DataGapError.
+
+    WHY start_ms/end_ms 파라미터: walk-forward 평가에서 전략을 여러 구간에 독립
+    적용하려면 같은 DB에서 ts 구간을 잘라 백테스트해야 한다. 기본값 None=기존 전체
+    로드 동작이므로 기존 호출 코드를 바꾸지 않아도 된다.
     """
-    df = load_candles_df(session, symbol, timeframe)
+    df = load_candles_df(session, symbol, timeframe, start_ms=start_ms, end_ms=end_ms)
     if df.empty:
         raise DataGapError(f"{symbol} {timeframe} 데이터가 없음. 먼저 'quantpilot collect' 실행.")
     tf_ms = timeframe_to_ms(timeframe)

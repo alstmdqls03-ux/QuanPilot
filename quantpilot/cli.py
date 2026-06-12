@@ -143,7 +143,12 @@ def status():
 @click.option("--leverage", default=3, show_default=True, type=int)
 @click.option("--allow-gaps", is_flag=True, default=False)
 @click.option("--htf", default=None, help="상위 TF 컨텍스트(예: 4h) — confluence S6 보너스")
-def backtest(strategy, symbol, timeframe, oos_months, capital, leverage, allow_gaps, htf):
+@click.option("--start-ms", default=None, type=int,
+              help="백테 시작 ts(ms, inclusive) — walk-forward 분할 평가용")
+@click.option("--end-ms", default=None, type=int,
+              help="백테 종료 ts(ms, inclusive) — walk-forward 분할 평가용")
+def backtest(strategy, symbol, timeframe, oos_months, capital, leverage, allow_gaps, htf,
+             start_ms, end_ms):
     """과거 데이터에 전략을 돌려 train/OOS 성과 측정."""
     if strategy not in STRATEGIES:
         raise click.ClickException(
@@ -164,8 +169,12 @@ def backtest(strategy, symbol, timeframe, oos_months, capital, leverage, allow_g
     from sqlalchemy import select
 
     session, _ = _session()
+    # WHY start_ms/end_ms를 load_with_gap_check에 전달: walk-forward는 같은 전략을
+    # 여러 기간 분할에 독립 평가해 '한 구간 과적합이 아닌지' 본다. 구간을 지정하면
+    # DB 전체가 아닌 ts 범위만 로드되므로 split_ts도 자연히 해당 구간 기준이 된다.
     try:
-        df, gaps, _ = load_with_gap_check(session, symbol, timeframe, allow_gaps)
+        df, gaps, _ = load_with_gap_check(session, symbol, timeframe, allow_gaps,
+                                          start_ms=start_ms, end_ms=end_ms)
     except DataGapError as e:
         raise click.ClickException(str(e))
     if gaps:
