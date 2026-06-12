@@ -152,15 +152,22 @@ class ConfluenceStrategy(IStrategy):
         rsi_s = rsi(window["close"], self.rsi_period)
         zones = build_zones(pivots, atr_v, closes=window["close"])
 
-        best = None
+        # M-3: 자격 통과 후보를 모아 동점 시 conflict hold.
+        # WHY: 양방향이 동점으로 둘 다 자격을 넘으면 방향이 상충하는 신호다.
+        # 이전 strict '>' 비교는 평가 순서(long 먼저)로 우연히 long이 채택됐다.
+        # 동점=진짜 엣지 없음이므로 진입하지 않는 게 맞다.
+        cands = []
         for side in ("long", "short"):
             score, families, detail = self._score_side(
                 side, window, pivots, zones, rsi_s, atr_v, now_ts)
             if score >= self.entry_min and len(families) >= self.entry_families:
-                if best is None or score > best[1]:
-                    best = (side, score, families, detail)
-        if best is None:
+                cands.append((side, score, families, detail))
+        if not cands:
             return Signal("hold", 0.0, None, {"why": "score"})
+        if len(cands) == 2 and cands[0][1] == cands[1][1]:
+            return Signal("hold", 0.0, None,
+                          {"blocked": "conflict", "score": cands[0][1]})
+        best = max(cands, key=lambda c: c[1])
         side, score, families, detail = best
 
         if self._one_way(window, side):
@@ -174,6 +181,16 @@ class ConfluenceStrategy(IStrategy):
             if not sel:
                 return Signal("hold", 0.0, None, {"blocked": "no_pivot"})
             anchor = sel[-1].price
+
+        # C-1: anchor 방향 가드 — anchor가 진입 반대편이면 stop이 entry를 넘어
+        # '진입 즉시 손절'되는 좀비 진입 + risk=abs(...)가 양수화돼 사이징이 왜곡된다.
+        # 어떤 하위 가드(청산거리·risk<=0)도 이 경로를 못 막으므로 여기서 회피.
+        # WHY here: stop 계산 전에 방향을 강제해야 stop/risk 계산이 의미를 갖는다.
+        if (side == "long" and anchor >= close) or \
+           (side == "short" and anchor <= close):
+            return Signal("hold", 0.0, None,
+                          {"blocked": "bad_anchor", "score": score})
+
         stop = anchor - 0.1 * atr_v if side == "long" else anchor + 0.1 * atr_v
         risk = abs(close - stop)
         if risk <= 0:
@@ -181,8 +198,14 @@ class ConfluenceStrategy(IStrategy):
 
         # TP1=경로상 첫 매물대 경계(없으면 1.5R) — G2 손익비 분자이자 V6(경로 차단) 내장.
         # TP2=피보(방향 짝지은 파동) 최원 레벨이 TP1보다 멀면 그것, 아니면 2.5R.
+        # I-1: zone_based 플래그로 폴백 여부를 명시 추적. 폴백(위/아래 존 없음)은
+        # WHY: rr==rr_min 경계에서 부동소수 ULP로 통과/차단이 임의로 갈린다.
+        # 폴백은 "1.5R로라도 진입" 의도이므로 G2 비교를 의도적으로 면제한다.
+        # falsy 패턴(or) 대신 is not None 체크로 0.0 같은 falsy 존 가격도 안전하게 처리.
         if side == "long":
-            tp1 = first_zone_above(zones, close) or close + 1.5 * risk
+            zone_tp1 = first_zone_above(zones, close)
+            tp1 = zone_tp1 if zone_tp1 is not None else close + 1.5 * risk
+            zone_based = zone_tp1 is not None
             tp2 = max(tp1 + 0.5 * risk, close + 2.5 * risk)
             lv = self._fib_levels_for(side, pivots, now_ts)
             if lv:
@@ -191,7 +214,9 @@ class ConfluenceStrategy(IStrategy):
                     tp2 = cand
             rr = (tp1 - close) / risk
         else:
-            tp1 = first_zone_below(zones, close) or close - 1.5 * risk
+            zone_tp1 = first_zone_below(zones, close)
+            tp1 = zone_tp1 if zone_tp1 is not None else close - 1.5 * risk
+            zone_based = zone_tp1 is not None
             tp2 = min(tp1 - 0.5 * risk, close - 2.5 * risk)
             lv = self._fib_levels_for(side, pivots, now_ts)
             if lv:
@@ -199,7 +224,7 @@ class ConfluenceStrategy(IStrategy):
                 if cand < tp1:
                     tp2 = cand
             rr = (close - tp1) / risk
-        if rr < self.rr_min:
+        if zone_based and rr < self.rr_min:
             return Signal("hold", 0.0, None,
                           {"blocked": "G2", "rr": rr, "score": score})
 

@@ -114,6 +114,20 @@ Week 3는 $0 페이퍼라 아래는 의도적 단순화로 남겨둠. 실거래 
 (완료: 분할익절·숏 parity 케이스 추가됨 — `test_paper_matches_backtest_partial_tp`/`_short`.
  진입 수수료 daily 서킷 반영·sticky halt·panic 원자성·루프 예외 재로드는 /review에서 수정 머지.)
 
+## Confluence 전략 Phase 2 — 실거래 전 재검토
+
+코드 리뷰(/review)에서 지적됐으나 Phase 1(인프라 검증, $0)에선 영향이 작아 deferred.
+실데이터 엣지 품질 저하 가능성 있으므로 Week 5 진입 전 재검토 필요.
+
+- [ ] **[M-2] touch_side 방향-블라인드** — 매물대 '지지 터치'가 접근 방향을 안 봐서
+  박스를 하향 돌파 중인 봉도 S1=+2를 받는다. 실데이터 edge 품질 저하 가능.
+  접근 방향(직전 봉 대비 하강 후 지지 도달) 검증 추가 검토.
+  (`quantpilot/strategy/zones.py` `touch_side` 함수)
+
+- [ ] **[I-2] G2 슬리피지 미반영** — rr/rr_tp1이 raw close 기준이라 슬리피지 적용
+  실현 entry보다 낙관적(최소-risk에서 1.5R 바닥이 1.4R로 침식). 슬리피지 반영
+  rr 재계산 검토. (`quantpilot/strategy/confluence.py` `generate_signal`)
+
 ## 유지보수 (cosmetic, 급하지 않음) — Week 1 테스트 린트 빚
 
 - [ ] `tests/test_cli.py` 미사용 import 3개(make_engine/make_session_factory/init_db) 제거.
