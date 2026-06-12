@@ -31,6 +31,10 @@ class TickContext:
     slippage_bps: float = 2.0
     poll_seconds: int = 60
     run_key: str = ""
+    # WHY 옵션 필드 htf: confluence S6 보너스 활성화에 필요한 상위 TF 식별자.
+    # 기본 None이므로 기존 호출(rsi-mr 등)은 변경 없이 동작(하위 호환).
+    # run_one_tick에서 매 틱 최신 HTF 캔들을 strategy.set_htf로 주입 → S6 신선 유지.
+    htf: str | None = None
 
 
 def process_bar(ctx: TickContext, state: PaperState, bar: dict,
@@ -187,6 +191,18 @@ def run_one_tick(ctx: TickContext, state: PaperState):
     df = load_candles_df(ctx.session, ctx.symbol, ctx.timeframe)
     if df.empty:
         return state, []
+
+    # HTF 컨텍스트 주입 — confluence S6(상위 TF 동발 보너스) 활성화.
+    # WHY 매 틱 재로드: 페이퍼는 실시간 운용 중 4h 봉이 닫힐 수 있으므로
+    # 매 틱 최신 HTF 캔들을 strategy.set_htf로 주입해야 S6 판정이 신선하게 유지된다.
+    # 백테(backtest 명령)는 실행 시 한 번만 주입해도 되지만 페이퍼는 틱마다 재주입 필요.
+    if ctx.htf and hasattr(ctx.strategy, "set_htf"):
+        from quantpilot.timeframes import timeframe_to_ms as _tfms
+        htf_df = load_candles_df(ctx.session, ctx.symbol, ctx.htf)
+        ctx.strategy.set_htf(htf_df)
+        if hasattr(ctx.strategy, "htf_ms"):
+            ctx.strategy.htf_ms = _tfms(ctx.htf)
+            ctx.strategy.ltf_ms = _tfms(ctx.timeframe)
 
     funding_events = [
         (f.ts, f.funding_rate) for f in ctx.session.execute(

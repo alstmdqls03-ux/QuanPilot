@@ -17,10 +17,11 @@ from quantpilot.data.collector import (
 from quantpilot.data.models import Candle, FundingRate, Instrument
 from quantpilot.timeframes import SUPPORTED_TIMEFRAMES, timeframe_to_ms
 from quantpilot.strategy.rsi_mean_reversion import RsiMeanReversion
+from quantpilot.strategy.confluence import ConfluenceStrategy
 from sqlalchemy import func, select
 
 # 전략 레지스트리 — 새 전략 = 클래스 + 여기 1줄
-STRATEGIES = {"rsi-mr": RsiMeanReversion}
+STRATEGIES = {"rsi-mr": RsiMeanReversion, "confluence": ConfluenceStrategy}
 
 
 def _session():
@@ -141,7 +142,8 @@ def status():
 @click.option("--capital", default=1000.0, show_default=True, type=float)
 @click.option("--leverage", default=3, show_default=True, type=int)
 @click.option("--allow-gaps", is_flag=True, default=False)
-def backtest(strategy, symbol, timeframe, oos_months, capital, leverage, allow_gaps):
+@click.option("--htf", default=None, help="상위 TF 컨텍스트(예: 4h) — confluence S6 보너스")
+def backtest(strategy, symbol, timeframe, oos_months, capital, leverage, allow_gaps, htf):
     """과거 데이터에 전략을 돌려 train/OOS 성과 측정."""
     if strategy not in STRATEGIES:
         raise click.ClickException(
@@ -149,8 +151,12 @@ def backtest(strategy, symbol, timeframe, oos_months, capital, leverage, allow_g
     if timeframe not in SUPPORTED_TIMEFRAMES:
         raise click.ClickException(
             f"지원하지 않는 timeframe '{timeframe}'. 사용 가능: {', '.join(sorted(SUPPORTED_TIMEFRAMES))}")
+    # WHY htf 검증을 timeframe 직후에: DB 조회 전에 파라미터 유효성을 모두 거부해야
+    # 사용자가 빠른 피드백을 받을 수 있고 불필요한 DB 세션 생성을 막는다.
+    if htf and htf not in SUPPORTED_TIMEFRAMES:
+        raise click.ClickException(f"지원하지 않는 htf '{htf}'")
 
-    from quantpilot.backtest.data_loader import DataGapError, load_with_gap_check
+    from quantpilot.backtest.data_loader import DataGapError, load_candles_df, load_with_gap_check
     from quantpilot.backtest.engine import run_backtest
     from quantpilot.backtest.metrics import compute_metrics, periods_per_year
     from quantpilot.backtest.report import format_console, save_equity_png
@@ -180,6 +186,19 @@ def backtest(strategy, symbol, timeframe, oos_months, capital, leverage, allow_g
     split_ts = int(df.index[-1]) - oos_months * 30 * 86_400_000
 
     strat = STRATEGIES[strategy](timeframe=timeframe)
+
+    # HTF 컨텍스트 주입 — confluence S6(4h 동발 보너스) 활성화용.
+    # WHY set_htf + htf_ms/ltf_ms 분리 세팅: htf_df는 데이터, ms 속성은 closed_htf_slice가
+    # 룩어헤드 없이 슬라이싱할 때 쓰는 ms 단위 간격. 둘 다 정확히 전략에 주입해야
+    # S6 판정이 LTF 봉 마감 기준으로 올바르게 동작한다.
+    if htf:
+        from quantpilot.timeframes import timeframe_to_ms as _tfms
+        if hasattr(strat, "set_htf"):
+            strat.set_htf(load_candles_df(session, symbol, htf))
+        if hasattr(strat, "htf_ms"):
+            strat.htf_ms = _tfms(htf)
+            strat.ltf_ms = _tfms(timeframe)
+
     result = run_backtest(
         candles=df, strategy=strat, capital=capital, ct_val=inst.ct_val,
         lot_sz=inst.lot_sz, leverage=leverage, fee_bps=5, slippage_bps=2,
@@ -199,11 +218,13 @@ def backtest(strategy, symbol, timeframe, oos_months, capital, leverage, allow_g
     click.echo(f"equity curve 저장됨: {png}")
 
 
-def _paper_ctx_and_state(symbol, timeframe, strategy, capital, leverage):
+def _paper_ctx_and_state(symbol, timeframe, strategy, capital, leverage, htf=None):
     """paper 루프 시작용 ctx+state 준비(세션·Instrument·전략).
 
     WHY 헬퍼 분리: paper 명령이 전략 인스턴스화 + Instrument(ct_val/lot_sz) 조회 + state
     복원을 한 번에 준비하도록 묶음. status/panic/logs는 더 가벼운 준비만 필요해 각자 처리.
+    WHY htf 파라미터: confluence S6 보너스를 위해 상위 TF를 TickContext.htf에 전달.
+    run_one_tick이 매 틱 최신 HTF 캔들을 로드해 strategy.set_htf로 주입한다.
     """
     from quantpilot.paper.store import load_state, make_run_key
     from quantpilot.paper.trader import TickContext
@@ -211,6 +232,8 @@ def _paper_ctx_and_state(symbol, timeframe, strategy, capital, leverage):
     if strategy not in STRATEGIES:
         raise click.ClickException(
             f"알 수 없는 전략 '{strategy}'. 사용 가능: {', '.join(STRATEGIES)}")
+    if htf and htf not in SUPPORTED_TIMEFRAMES:
+        raise click.ClickException(f"지원하지 않는 htf '{htf}'")
     session, _ = _session()
     inst = session.execute(select(Instrument).where(
         Instrument.symbol == symbol)).scalar_one_or_none()
@@ -223,7 +246,7 @@ def _paper_ctx_and_state(symbol, timeframe, strategy, capital, leverage):
     strat = STRATEGIES[strategy](timeframe=timeframe)
     ctx = TickContext(session=session, client=None, symbol=symbol, timeframe=timeframe,
                       strategy=strat, capital=capital, leverage=leverage,
-                      ct_val=inst.ct_val, lot_sz=inst.lot_sz, run_key=rk)
+                      ct_val=inst.ct_val, lot_sz=inst.lot_sz, run_key=rk, htf=htf)
     return session, ctx, state
 
 
@@ -234,12 +257,14 @@ def _paper_ctx_and_state(symbol, timeframe, strategy, capital, leverage):
 @click.option("--capital", default=1000.0, show_default=True, type=float)
 @click.option("--leverage", default=3, show_default=True, type=int)
 @click.option("--poll-seconds", default=60, show_default=True, type=int)
-def paper(symbol, timeframe, strategy, capital, leverage, poll_seconds):
+@click.option("--htf", default=None, help="상위 TF 컨텍스트(예: 4h) — confluence S6 보너스")
+def paper(symbol, timeframe, strategy, capital, leverage, poll_seconds, htf):
     """실시간 페이퍼 트레이딩 루프 시작(포그라운드, 재시작 안전)."""
     from quantpilot.exchange.client import OKXClient
     from quantpilot.paper.trader import run_loop
 
-    session, ctx, state = _paper_ctx_and_state(symbol, timeframe, strategy, capital, leverage)
+    session, ctx, state = _paper_ctx_and_state(symbol, timeframe, strategy, capital, leverage,
+                                                htf=htf)
     client = OKXClient()
     client.load_markets()
     ctx.client = client

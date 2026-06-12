@@ -178,6 +178,78 @@ def test_paper_matches_backtest_partial_tp():
         f"equity 불일치: paper={st.equity}, bt={bt.equity_curve[-1][1]}")
 
 
+# ─── confluence meta parity (BE트레일 + risk_mult + targets) ─────────────────
+
+class _ConfluenceLikeLongOnce(IStrategy):
+    """confluence 출력 모사: meta[targets]+risk_mult, be_trail_after_tp1=True.
+
+    WHY 스텁: 실 ConfluenceStrategy로 거래를 유발하는 fixture는 까다로움.
+    엔진의 targets 주입·risk_mult·BE트레일 경로가 백테=페이퍼 동일한지가 진짜 관심사이므로
+    confluence 출력을 직접 내는 스텁으로 충분히 검증 가능.
+    """
+    name = "p-confl"
+    be_trail_after_tp1 = True      # process_bar가 getattr로 읽어 엔진에 전달
+
+    def __init__(self):
+        self.timeframe = "1h"
+        self.lookback = 2
+        self._entered = False
+
+    def generate_signal(self, window, open_position):
+        if open_position is None and not self._entered:
+            self._entered = True
+            price = float(window["close"].iloc[-1])
+            stop = price - 5.0
+            return Signal("long", 0.5, stop,
+                          {"risk_mult": 0.5,
+                           "targets": [(price + 5.0, 0.5), (price + 12.0, 0.4)]})
+        return Signal("hold", 0.0, None, {})
+
+
+def test_paper_matches_backtest_confluence_meta():
+    """confluence 경로(meta targets·risk_mult·BE트레일)가 백테=페이퍼 동일.
+
+    봉 구성:
+      bar0, bar1  warmup (close=100)
+      bar2        진입봉 (close=100 → entry≈100.02, stop=95, risk_mult=0.5)
+                  TP1=105 (50%), TP2=112 (40%)
+      bar3        TP1봉 (high=106 ≥ TP1=105 → 부분청산 50%, BE이동 stop=entry≈100.02)
+                  low=100 > stop=95(원래) → stop 미발동
+      bar4        BE손절봉 (low=99 ≤ BE stop≈100.02 → 잔여 전량 손절)
+
+    WHY be_trail_after_tp1 클래스 속성으로 충분: process_bar가
+    getattr(ctx.strategy, 'be_trail_after_tp1', False)로 읽으므로
+    인스턴스가 아닌 클래스 속성도 동작한다. T9 회귀 없음을 확인.
+    """
+    df = _ohlc([
+        (100, 101, 99, 100),   # bar0 warmup
+        (100, 101, 99, 100),   # bar1 warmup
+        (100, 101, 99, 100),   # bar2 진입 (close=100, stop=95, tp1=105)
+        (100, 106, 100, 100),  # bar3 TP1 체결 (high=106 ≥ 105), low=100 > stop=95
+        (100, 101,  99, 100),  # bar4 BE 손절 (low=99 ≤ entry≈100.02)
+    ])
+
+    bt = _bt(_ConfluenceLikeLongOnce(), df)
+    st, paper_trades = _run_paper(_ConfluenceLikeLongOnce(), df, name="p-confl")
+
+    # 양쪽 모두 정확히 1건(부분익절+BE손절이 1건의 복합 Trade로 집계)
+    assert len(bt.trades) == 1, f"백테 거래 수 != 1: {len(bt.trades)}"
+    assert len(paper_trades) == 1, f"페이퍼 거래 수 != 1: {len(paper_trades)}"
+
+    # TP1 부분청산이 있었으므로 마지막 fill은 stop(BE) → reason="stop"
+    assert bt.trades[0].reason == "stop", f"bt reason={bt.trades[0].reason}"
+    assert paper_trades[0].reason == "stop", f"paper reason={paper_trades[0].reason}"
+
+    # 거래 일치(side/entry/exit_weighted_avg/reason/pnl_net 6dp)
+    assert _trade_key(paper_trades[0]) == _trade_key(bt.trades[0]), (
+        f"parity 불일치:\n  paper={_trade_key(paper_trades[0])}\n"
+        f"  bt={_trade_key(bt.trades[0])}")
+
+    # 최종 equity 일치 (bar4에서 flat → 곡선 마지막 = 실현 equity)
+    assert abs(st.equity - bt.equity_curve[-1][1]) < 1e-6, (
+        f"equity 불일치: paper={st.equity}, bt={bt.equity_curve[-1][1]}")
+
+
 # ─── 숏 사이드 parity ────────────────────────────────────────────────────────
 
 class _ShortOnce(IStrategy):

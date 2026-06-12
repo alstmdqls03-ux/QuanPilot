@@ -457,6 +457,63 @@ def test_run_one_tick_skips_persist_when_panic_halted(session):
     assert read_panic_halted(session, rk) is True, "루프 persist가 panic_halted를 덮어써선 안 됨"
 
 
+def test_tickcontext_htf_field_defaults_none():
+    """TickContext에 htf 옵션 필드가 있고 기본값 None이어야 함(기존 호출 불변)."""
+    from quantpilot.paper.trader import TickContext
+    ctx = TickContext(session=None, client=None, symbol="BTC-USDT-SWAP", timeframe="1h",
+                      strategy=_HoldStrategy(), capital=1000.0, leverage=3,
+                      ct_val=0.01, lot_sz=1.0, run_key="rk")
+    # htf 필드 존재 + 기본 None
+    assert hasattr(ctx, "htf"), "TickContext에 htf 필드 없음"
+    assert ctx.htf is None, f"htf 기본값이 None이 아님: {ctx.htf}"
+
+
+def test_run_one_tick_htf_branch_calls_set_htf(session):
+    """ctx.htf가 설정되면 run_one_tick이 매 틱 strategy.set_htf를 호출해야 함.
+
+    WHY 매 틱 재로드: 페이퍼는 실시간 운용 중 4h 봉이 닫힐 수 있으므로
+    매 틱 최신 HTF 캔들을 전략에 주입해야 S6 판정이 신선하게 유지된다.
+    백테는 한 번만 주입해도 되지만 페이퍼는 틱마다 재주입이 필요.
+    """
+    from quantpilot.paper.store import PaperState, make_run_key
+    from quantpilot.paper.trader import TickContext, run_one_tick
+
+    tf = 3_600_000
+    base = 1_700_000_000_000
+
+    # LTF 1h 봉 3개 시딩
+    rows = [(base + i * tf, 100.0, 101.0, 99.0, 100.0) for i in range(3)]
+    _seed_candles(session, "BTC-USDT-SWAP", "1h", rows)
+    # 4h 봉 1개 시딩 (htf_df 로드를 위해)
+    from quantpilot.data.models import Candle
+    session.add(Candle(exchange="okx", symbol="BTC-USDT-SWAP", timeframe="4h",
+                       ts=base, open=100.0, high=102.0, low=98.0, close=100.0,
+                       volume=1.0, inserted_at=base))
+    session.commit()
+
+    # set_htf 호출을 추적하는 스파이 전략
+    class _SpyStrategy(_HoldStrategy):
+        def __init__(self):
+            super().__init__()
+            self.htf_calls = []
+            self.htf_ms = 4 * tf
+            self.ltf_ms = tf
+
+        def set_htf(self, df):
+            self.htf_calls.append(df)
+
+    spy = _SpyStrategy()
+    rk = make_run_key("BTC-USDT-SWAP", "1h", "t-hold")
+    ctx = TickContext(session=session, client=None, symbol="BTC-USDT-SWAP",
+                      timeframe="1h", strategy=spy, capital=1000.0, leverage=3,
+                      ct_val=0.01, lot_sz=1.0, run_key=rk, htf="4h")
+    st = PaperState(run_key=rk, symbol="BTC-USDT-SWAP", timeframe="1h",
+                    strategy="t-hold", equity=1000.0, day_start_equity=1000.0,
+                    day_start_ts=0)
+    run_one_tick(ctx, st)
+    assert len(spy.htf_calls) > 0, "ctx.htf가 설정됐는데 set_htf가 호출되지 않음"
+
+
 def test_restart_with_open_position_then_stop(session):
     """열린 포지션이 DB에 있는 상태에서 재시작한 뒤 손절 봉을 처리하는 경로 검증.
 
