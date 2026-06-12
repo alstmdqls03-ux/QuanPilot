@@ -36,6 +36,32 @@ quantpilot backtest --strategy rsi-mr --symbol BTC-USDT-SWAP \
 > baseline `rsi-mr`는 수익성 보장이 아니라 파이프라인 검증용입니다. OOS Sharpe가
 > 음수로 나오면 "이 전략엔 edge가 없다"를 시스템이 정확히 말해주는 것입니다.
 
+## confluence 전략 (BOT-SPEC 모드 A 코어)
+
+차트패턴 강의(`00-자동매매봇-규칙명세서.md`)의 **근거 겹침 점수제**를 구현한 두 번째 전략.
+한 자리에서 여러 시그널이 겹칠 때만 진입합니다.
+
+```bash
+quantpilot collect --symbol BTC-USDT-SWAP --timeframe 4h --days 730 --heal   # 상위 TF
+quantpilot backtest --strategy confluence --symbol BTC-USDT-SWAP \
+    --timeframe 1h --htf 4h --oos-months 4
+quantpilot backtest --strategy confluence --start-ms <ts> --end-ms <ts>      # walk-forward 분할
+```
+
+- **시그널(점수)**: 매물대 지지/저항(+2) · RSI 다이버전스(+2, 더블 +1) · 피보 0.5~0.618 존(+1) ·
+  RSI 극단(+1) · 4h 동발 보너스(+2캡). **총점 ≥4 & 계열 ≥2**면 진입(리스크 2.5%), **≥6 & ≥3**이면
+  강진입(5%). 게이트: 손익비 ≥1.5(G2), 직전 20봉 일방추세면 역추세 진입 차단(V1).
+- **기반 모듈**(전부 직접 구현·룩어헤드-프리): `pivots`(ZigZag 확정 피벗) → `zones`(매물대) ·
+  `divergence` · `fib`. `--htf`는 상위 TF를 **이미 마감된 봉만** 슬라이스해 주입(미래 정보 차단).
+- **청산**은 Week 2 엔진 재사용: TP 사다리 50/40/10 + TP1 후 손절 본전 이동 + 손절. 백테=페이퍼
+  일치(parity 테스트).
+- gap 메우기: `collect --heal`로 기존 데이터의 누락 구간만 재수집(연속성 보장).
+
+> ⚠️ **검증 결과(`docs/validation/confluence-v1.md`)**: BTC/ETH 1h 2년에서 **합격 못 함**.
+> 기본 임계는 거래가 2년 3~8건뿐(표본 과소), 임계를 완화해 거래를 20+로 늘리면 PF가 1 근처로
+> 수렴(엣지 없음). 전략 결함이 아니라 신호 희소성 — **미검증/잠정 음성**으로, 실거래 근거가
+> 전혀 아닙니다. Phase 2(15m 진입·모드 B·채널)로 신호를 늘려 재검증해야 합니다.
+
 ## Week 3 — 페이퍼 트레이더
 
 > 실거래(진짜 돈)는 Week 5+ 전까지 없음. 페이퍼는 **$0 리스크** 시뮬레이션.
